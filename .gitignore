@@ -1,0 +1,64 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Local/config
+.claude/
+.claude/settings.local.json
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+.venv/
+env.bak/
+venv.bak/
+pythonenv*
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Streamlit
+.streamlit/
+
+# Local output files
+*.pptx
+!sample_output.pptx
+output/
+downloads/
+
+# Temporary files
+*.tmp
+/tmp/
+*.log
+
+# Jupyter
+.ipynb_checkpoints
+
+# OS
+Thumbs.db
+.DS_Store

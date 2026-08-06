@@ -1,0 +1,15 @@
+event_name,session_id,session_title,stage,speaker_name,job_title,company,is_moderator,brand
+NetworkX London 2026,NET001,Opening Keynote: The Future of Networking Technology,HEADLINERS,Sarah Chen,Chief Technology Officer,NetCore Systems,no,Informa Tech
+NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,Marcus Williams,VP of Engineering,CloudScale AI,yes,Informa Tech
+NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,Elena Rodriguez,Senior Network Architect,TelcoPro,no,Informa Tech
+NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,James Park,Director of AI Research,FutureNet Labs,no,Informa Tech
+NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,Amira Hassan,Principal Engineer,DataFlow Inc,no,Informa Tech
+NetworkX London 2026,NET003,Workshop: Building Resilient Networks,WORKSHOPS,David Thompson,Founder,Infrastructure First,no,Informa Tech
+NetworkX London 2026,NET004,Fireside Chat: Lessons from Global Deployments,HEADLINERS,Lisa Chang,CEO,ConnectX,no,Informa Tech
+NetworkX London 2026,NET005,Technical Deep Dive: 5G Edge Computing,HEADLINERS,Dr. Robert Kumar,Head of 5G Strategy,MobileTech Global,no,Informa Tech
+NetworkX London 2026,NET005,Technical Deep Dive: 5G Edge Computing,HEADLINERS,Patricia Nguyen,Lead Architect,EdgeCompute Solutions,no,Informa Tech
+NetworkX London 2026,NET006,Closing Session: Next Year's Challenges,HEADLINERS,Thomas Andersen,Chief Innovation Officer,NextGen Networks,yes,Informa Tech
+PharmaSummit 2026,PHAR001,Opening: The Future of Drug Discovery,MAIN STAGE,Dr. Jane Smith,Chief Scientific Officer,PharmaCorp,no,Informa Pharma
+PharmaSummit 2026,PHAR001,Opening: The Future of Drug Discovery,MAIN STAGE,Prof. Michael Brown,Head of Research,BioTech Labs,no,Informa Pharma
+PharmaSummit 2026,PHAR002,Panel: Regulatory Challenges in 2026,TRACK A,Dr. Sarah Johnson,VP Regulatory Affairs,ReguPharm,yes,Informa Pharma
+PharmaSummit 2026,PHAR002,Panel: Regulatory Challenges in 2026,TRACK A,Dr. David Lee,Director of Compliance,MedStar,no,Informa Pharma
