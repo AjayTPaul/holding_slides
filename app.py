@@ -287,8 +287,7 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
         p.font.color.rgb = hex_to_rgb(stage_text_color or COLORS["stage_text_light"])
         p.alignment = PP_ALIGN.LEFT
 
-    # Content panel with configurable color and opacity
-    from pptx.enum.dml import MSO_THEME_COLOR
+    # Content panel with configurable color and opacity via XML
     panel = slide.shapes.add_shape(
         MSO_SHAPE.ROUNDED_RECTANGLE,
         Inches(CONTENT_PANEL["left"]),
@@ -298,13 +297,25 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
     )
     panel.fill.solid()
     panel.fill.fore_color.rgb = hex_to_rgb((panel_color or COLORS["panel_bg"]).lstrip("#"))
-    # Apply transparency (0-100%, where 100% = opaque, 0% = fully transparent)
-    # In PowerPoint, transparency is stored as 0-100000 (where 0 = opaque)
-    transparency = int((100 - panel_opacity) * 1000)  # Convert to PowerPoint units
-    if transparency > 0:
-        panel.fill.fore_color.brightness = 0.0  # Reset brightness
-        # Set transparency via the color's alpha/tint
-        panel.fill.transparency = (100 - panel_opacity) / 100.0
+
+    # Apply transparency via direct XML manipulation (this actually works)
+    # PowerPoint stores alpha as a percentage * 1000 (0-100000)
+    if panel_opacity < 100:
+        from pptx.oxml.ns import qn
+        # Get the spPr (shape properties) element
+        spPr = panel._sp.get_or_add_spPr()
+        # Get the solidFill element
+        solidFill = spPr.find(qn('a:solidFill'))
+        if solidFill is not None:
+            # Find the srgbClr element within solidFill
+            srgbClr = solidFill.find(qn('a:srgbClr'))
+            if srgbClr is not None:
+                # Add alpha element for transparency
+                from pptx.oxml import parse_xml
+                alpha_val = int((panel_opacity / 100) * 100000)  # Convert to PowerPoint units
+                alpha_xml = f'<a:alpha xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" val="{alpha_val}"/>'
+                srgbClr.append(parse_xml(alpha_xml))
+
     panel.line.fill.background()
 
     speakers = sorted(session["speakers"], key=lambda s: (not s["is_moderator"], s["name"]))
@@ -434,38 +445,50 @@ def render_slide_preview_pil(target_width_px, session, brand_logo_bytes, informa
         bg_color = hex_to_rgb_tuple(COLORS["default_bg"])
         bg = Image.new("RGB", (target_width_px, target_height_px), bg_color)
 
-    draw = ImageDraw.Draw(bg, 'RGBA')
-
-    # Content panel with opacity
+    # PROPER ALPHA BLENDING: Create overlay for panel with transparency
     panel_left = int((CONTENT_PANEL["left"] / SLIDE_WIDTH_IN) * target_width_px)
     panel_top = int((CONTENT_PANEL["top"] / SLIDE_HEIGHT_IN) * target_height_px)
     panel_right = int(((CONTENT_PANEL["left"] + CONTENT_PANEL["width"]) / SLIDE_WIDTH_IN) * target_width_px)
     panel_bottom = int(((CONTENT_PANEL["top"] + CONTENT_PANEL["height"]) / SLIDE_HEIGHT_IN) * target_height_px)
+
+    # Convert background to RGBA for compositing
+    if bg.mode != 'RGBA':
+        bg = bg.convert('RGBA')
+
+    # Create transparent overlay same size as slide
+    overlay = Image.new('RGBA', (target_width_px, target_height_px), (0, 0, 0, 0))
+    overlay_draw = ImageDraw.Draw(overlay, 'RGBA')
+
+    # Draw panel onto overlay with proper alpha
     panel_rgb = hex_to_rgb_tuple(panel_color or COLORS["panel_bg"])
     alpha = int(255 * panel_opacity / 100)
-    draw.rounded_rectangle(
+    overlay_draw.rounded_rectangle(
         [panel_left, panel_top, panel_right, panel_bottom],
         radius=12,
         fill=panel_rgb + (alpha,)
     )
 
-    # Load fonts with bold variants
+    # Composite overlay onto background using proper alpha blending
+    bg = Image.alpha_composite(bg, overlay)
+
+    # Now draw text directly onto the composited image at full opacity
+    draw = ImageDraw.Draw(bg, 'RGBA')
+
+    # Load bundled fonts from fonts/ directory (works on any machine, local or cloud)
+    script_dir = Path(__file__).parent
+    fonts_dir = script_dir / "fonts"
     try:
-        title_font = ImageFont.truetype("OpenSans-Bold.ttf", int(target_width_px * 0.04))
-        speaker_font_regular = ImageFont.truetype("OpenSans-Regular.ttf", int(target_width_px * 0.023))
-        speaker_font_bold = ImageFont.truetype("OpenSans-Bold.ttf", int(target_width_px * 0.023))
-        stage_font = ImageFont.truetype("OpenSans-Bold.ttf", int(target_width_px * 0.024))
-    except:
-        try:
-            title_font = ImageFont.truetype("arial.ttf", int(target_width_px * 0.04))
-            speaker_font_regular = ImageFont.truetype("arial.ttf", int(target_width_px * 0.023))
-            speaker_font_bold = ImageFont.truetype("arialbd.ttf", int(target_width_px * 0.023))
-            stage_font = ImageFont.truetype("arialbd.ttf", int(target_width_px * 0.024))
-        except:
-            title_font = ImageFont.load_default()
-            speaker_font_regular = ImageFont.load_default()
-            speaker_font_bold = ImageFont.load_default()
-            stage_font = ImageFont.load_default()
+        title_font = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.04))
+        speaker_font_regular = ImageFont.truetype(str(fonts_dir / "OpenSans-Regular.ttf"), int(target_width_px * 0.023))
+        speaker_font_bold = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.023))
+        stage_font = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.024))
+    except Exception as e:
+        # Fallback to default if fonts missing
+        st.warning(f"Bundled fonts not found at {fonts_dir}, using default font: {e}")
+        title_font = ImageFont.load_default()
+        speaker_font_regular = ImageFont.load_default()
+        speaker_font_bold = ImageFont.load_default()
+        stage_font = ImageFont.load_default()
 
     # Session title (bold) - positioned inside the panel with proper margins
     title_x = panel_left + int(target_width_px * 0.025)
@@ -695,9 +718,28 @@ def main():
             # 5. Stage toggle
             include_stage = st.checkbox("Show stage name", value=True)
 
-        # Generate with Indigo CTA color
+        # Generate with Indigo CTA color and Ultramarine hover (#003CB2)
         if selected_event:
-            st.markdown("<style>.stButton>button {background-color: #002244; border-color: #002244;}</style>", unsafe_allow_html=True)
+            st.markdown("""
+            <style>
+                .stButton>button {
+                    background-color: #002244 !important;
+                    border-color: #002244 !important;
+                }
+                .stButton>button:hover {
+                    background-color: #003CB2 !important;
+                    border-color: #003CB2 !important;
+                }
+                .stButton>button:focus {
+                    background-color: #003CB2 !important;
+                    border-color: #003CB2 !important;
+                }
+                .stButton>button:active {
+                    background-color: #003CB2 !important;
+                    border-color: #003CB2 !important;
+                }
+            </style>
+            """, unsafe_allow_html=True)
             generate_clicked = st.button(
                 "Generate Slides",
                 type="primary",
