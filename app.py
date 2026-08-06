@@ -298,23 +298,24 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
     panel.fill.solid()
     panel.fill.fore_color.rgb = hex_to_rgb((panel_color or COLORS["panel_bg"]).lstrip("#"))
 
-    # Apply transparency via direct XML manipulation (this actually works)
+    # Apply transparency via direct XML manipulation
     # PowerPoint stores alpha as a percentage * 1000 (0-100000)
     if panel_opacity < 100:
         from pptx.oxml.ns import qn
-        # Get the spPr (shape properties) element
-        spPr = panel._sp.get_or_add_spPr()
-        # Get the solidFill element
-        solidFill = spPr.find(qn('a:solidFill'))
-        if solidFill is not None:
-            # Find the srgbClr element within solidFill
-            srgbClr = solidFill.find(qn('a:srgbClr'))
-            if srgbClr is not None:
-                # Add alpha element for transparency
-                from pptx.oxml import parse_xml
-                alpha_val = int((panel_opacity / 100) * 100000)  # Convert to PowerPoint units
-                alpha_xml = f'<a:alpha xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" val="{alpha_val}"/>'
-                srgbClr.append(parse_xml(alpha_xml))
+        from pptx.oxml import parse_xml
+        # Access the shape's spPr through the fill's element
+        fill_elem = panel.fill._xPr
+        if fill_elem is not None:
+            # Find solidFill in the fill properties
+            solidFill = fill_elem.find(qn('a:solidFill'))
+            if solidFill is not None:
+                # Find or create srgbClr
+                srgbClr = solidFill.find(qn('a:srgbClr'))
+                if srgbClr is not None:
+                    # Add alpha element for transparency
+                    alpha_val = int((panel_opacity / 100) * 100000)
+                    alpha_xml = f'<a:alpha xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" val="{alpha_val}"/>'
+                    srgbClr.append(parse_xml(alpha_xml))
 
     panel.line.fill.background()
 
