@@ -614,47 +614,34 @@ def main():
 
     # Left column - Compact Controls
     with left_col:
-        # Data & Event Card
+        # Data & Event Card - always uses sample data
         with st.container(border=True):
-            st.markdown("**Data & Event**")
+            st.markdown("**Event**")
 
-            use_sample = st.checkbox("Use sample data", value=True)
-
-            if not use_sample:
-                uploaded_csv = st.file_uploader("CSV file", type=["csv"], label_visibility="collapsed")
-                if uploaded_csv:
-                    st.session_state.csv_path = "/tmp/uploaded_sessions.csv"
-                    with open(st.session_state.csv_path, "wb") as f:
-                        f.write(uploaded_csv.getvalue())
-
-            csv_path = st.session_state.csv_path if use_sample else st.session_state.csv_path
+            csv_path = "sample_sessions.csv"
             selected_event = None
-            event_brand = None
 
-            if csv_path:
-                try:
-                    events = load_events(csv_path)
-                    if events:
-                        event_names = [e["event_name"] for e in events]
-                        selected_event = st.selectbox(
-                            "Event",
-                            event_names,
-                        )
-                        event_brand = get_event_brand(csv_path, selected_event)
-                    else:
-                        st.warning("No events found")
-                except Exception as e:
-                    st.error(f"Could not load: {e}")
+            try:
+                events = load_events(csv_path)
+                if events:
+                    event_names = [e["event_name"] for e in events]
+                    selected_event = st.selectbox(
+                        "Select event",
+                        event_names,
+                    )
+                else:
+                    st.warning("No events found")
+            except Exception as e:
+                st.error(f"Could not load: {e}")
 
         # Branding Card - compressed layout
         with st.container(border=True):
             st.markdown("**Branding**")
 
-            # 1. Brand Logo (compact)
+            # 1. Brand Logo
             brand_logo_file = st.file_uploader(
                 "Brand logo",
                 type=["png", "jpg", "jpeg"],
-                help="Appears top-left on slides",
             )
             brand_logo_bytes = brand_logo_file.getvalue() if brand_logo_file else None
             if brand_logo_bytes:
@@ -680,40 +667,32 @@ def main():
             )
             bg_image_bytes = None
             bg_color = None
+            if bg_choice == "Image":
+                bg_file = st.file_uploader("Background image", type=["png", "jpg", "jpeg"])
+                if bg_file:
+                    bg_image_bytes = bg_file.getvalue()
 
-            # 4. COLORS SECTION - All in one row
+            # 4. COLORS SECTION
             st.markdown("**Colors**")
-            color_cols = st.columns(4)
+            color_cols = st.columns([2, 2, 1.5, 1.5])
             with color_cols[0]:
-                if bg_choice == "Color":
-                    bg_color = st.color_picker("Background", value="#F5F5F5")
-                else:
-                    bg_color = st.color_picker("Background", value="#F5F5F5", disabled=True)
-                    bg_color = None
-            with color_cols[1]:
                 panel_color = st.color_picker("Panel", value="#" + COLORS["panel_bg"])
-            with color_cols[2]:
+            with color_cols[1]:
                 panel_text_color = st.color_picker("Panel text", value="#" + COLORS["title_text_dark"])
-            with color_cols[3]:
-                stage_text_color = st.color_picker("Stage text", value="#" + COLORS["stage_text_light"])
-
-            # Advanced settings in expander
-            with st.expander("Advanced"):
-                panel_opacity = st.slider(
-                    "Panel opacity",
+            with color_cols[2]:
+                panel_opacity = st.number_input(
+                    "Opacity %",
                     min_value=0,
                     max_value=100,
                     value=100,
                     step=5,
-                    format="%d%%",
-                    help="Only affects panel background, text stays fully opaque",
                 )
-                if bg_choice == "Image":
-                    bg_file = st.file_uploader("Background image", type=["png", "jpg", "jpeg"])
-                    if bg_file:
-                        bg_image_bytes = bg_file.getvalue()
+            with color_cols[3]:
+                stage_text_color = st.color_picker("Stage", value="#" + COLORS["stage_text_light"])
+            if bg_choice == "Color":
+                bg_color = st.color_picker("Background", value="#F5F5F5")
 
-            # 5. Stage toggle (compact)
+            # 5. Stage toggle
             include_stage = st.checkbox("Show stage name", value=True)
 
         # Generate with Indigo CTA color
