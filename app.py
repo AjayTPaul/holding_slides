@@ -758,8 +758,8 @@ def main():
                             background_color=bg_color,
                             panel_color=panel_color,
                             panel_opacity=panel_opacity,
-                            panel_text_color=panel_text_color if 'panel_text_color' in locals() else COLORS["title_text_dark"],
-                            stage_text_color=stage_text_color if 'stage_text_color' in locals() else COLORS["stage_text_light"],
+                            panel_text_color=panel_text_color,
+                            stage_text_color=stage_text_color,
                             include_stage=include_stage,
                         )
                         st.success(f"Generated {num_slides} slides!")
