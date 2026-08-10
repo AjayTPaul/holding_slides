@@ -12,6 +12,8 @@ import tempfile
 from pathlib import Path
 
 import streamlit as st
+from streamlit.components.v1 import html as st_html
+import streamlit.components.v1 as components
 import pandas as pd
 from PIL import Image, ImageDraw, ImageFont
 from pptx import Presentation
@@ -396,17 +398,22 @@ def render_slide_preview_pil(target_width_px, session, template_image_bytes, tex
 
 def main():
     st.set_page_config(
-        page_title="Holding Slides | Informa Connect",
+        page_title="Holding Slide Generator | Informa",
         page_icon="🎨",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
 
+    # Informa logo and title header (stacked vertically)
+    informa_logo_path = Path(__file__).parent / "Informa Logo" / "Informa_Logo_OneLine_Graduated_Indigo_RGB.png"
+    if informa_logo_path.exists():
+        st.image(str(informa_logo_path), width=120)
+
     # Title with brand color and subtitle
     st.markdown(
         f"""
-        <h1 style='font-size: 2.5rem; margin-bottom: 0.25rem; color: #{COLORS["cta_bg"]};'>
-            Informa Connect Session Slide Builder
+        <h1 style='font-size: 2.5rem; margin-bottom: 0.25rem; margin-top: 0.5rem; color: #{COLORS["cta_bg"]};'>
+            Holding Slide Generator
         </h1>
         <p style='color: #6B7280; font-size: 1rem; margin-bottom: 1.5rem;'>
             Generate professional holding slides for your event sessions
@@ -540,14 +547,14 @@ def main():
                             template_image_bytes=template_bytes,
                             text_color=text_color.lstrip("#"),
                         )
-                        st.success(f"Generated {num_slides} slides!")
-                        st.download_button(
-                            label="Download PPTX",
-                            data=output_bytes,
-                            file_name=f"{selected_event.replace(' ', '_')}_{selected_stream.replace(' ', '_')}_holding_slides.pptx",
-                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                            use_container_width=True,
-                        )
+
+                        # Auto-trigger download via hidden link
+                        filename = f"{selected_event.replace(' ', '_')}_{selected_stream.replace(' ', '_')}_holding_slides.pptx"
+                        b64 = base64.b64encode(output_bytes.getvalue()).decode()
+                        st_html(f"""
+                            <a id="auto-dl" href="data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,{b64}" download="{filename}"></a>
+                            <script>document.getElementById('auto-dl').click();</script>
+                        """, height=0)
                     except Exception as e:
                         st.error(f"Error: {e}")
 
