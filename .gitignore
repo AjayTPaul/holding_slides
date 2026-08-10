@@ -43,7 +43,6 @@ pythonenv*
 .DS_Store
 
 # Streamlit
-.streamlit/
 
 # Local output files
 *.pptx

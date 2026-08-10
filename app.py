@@ -399,7 +399,7 @@ def render_slide_preview_pil(target_width_px, session, template_image_bytes, tex
 def main():
     st.set_page_config(
         page_title="Holding Slide Generator | Informa",
-        page_icon="🎨",
+        page_icon="Informa_Orbit_RGB.png",
         layout="wide",
         initial_sidebar_state="collapsed",
     )
