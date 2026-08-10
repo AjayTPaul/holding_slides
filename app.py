@@ -18,7 +18,6 @@ from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
-from pptx.enum.shapes import MSO_SHAPE
 
 
 # -----------------------------------------------------------------------------
@@ -34,10 +33,6 @@ COLORS = {
     "title_text_light": "FFFFFF",  # White
     "speaker_text_dark": "283857",
     "speaker_text_light": "FFFFFF",
-    "stage_text_dark": "283857",
-    "stage_text_light": "FFFFFF",
-    "panel_bg": "E3F4FF",
-    "accent": "003CB2",
     "default_bg": "F5F5F5",
     "cta_bg": "002244",  # Indigo
 }
@@ -49,39 +44,12 @@ CONTENT_PANEL = {
     "height": 3.5,
 }
 
-STAGE_TEXTBOX = {
-    "left": 0.5,
-    "bottom_offset": 0.5,
-    "width": 4.0,
-    "height": 0.6,
-}
-
-BRAND_LOGO_PLACEMENT = {
-    "left": 0.56,
-    "top": 0.34,
-    "max_width": 2.68,
-    "max_height": 0.64,
-}
-
-INFORMA_LOGO_PLACEMENT = {
-    "left": 11.79,
-    "top": 6.63,
-    "max_width": 0.98,
-    "max_height": 0.31,
-}
-
 TITLE_FONT = "Open Sans"
 SPEAKER_FONT = "Open Sans"
-STAGE_FONT = "Open Sans"
 TITLE_MAX_PT = 36
 TITLE_MIN_PT = 24
 SPEAKER_MAX_PT = 21
 SPEAKER_MIN_PT = 16
-STAGE_PT = 18
-
-ASSETS_DIR = Path(__file__).parent / "Informa Logo"
-INFORMA_LOGO_LIGHT = ASSETS_DIR / "Informa_Logo_OneLine_Graduated_White_RGB.png"
-INFORMA_LOGO_DARK = ASSETS_DIR / "Informa_Logo_OneLine_Graduated_Indigo_RGB.png"
 
 
 # -----------------------------------------------------------------------------
@@ -100,9 +68,11 @@ def load_events(csv_path):
     return events.to_dict("records")
 
 
-def load_sessions_for_event(csv_path, event_name):
+def load_sessions_for_event(csv_path, event_name, stream=None):
     df = pd.read_csv(csv_path)
     df = df[df["event_name"] == event_name]
+    if stream:
+        df = df[df["stage"] == stream]
     sessions = {}
     for _, row in df.iterrows():
         session_id = str(row.get("session_id", "")).strip()
@@ -112,7 +82,6 @@ def load_sessions_for_event(csv_path, event_name):
             sessions[session_id] = {
                 "session_id": session_id,
                 "session_title": str(row.get("session_title", "")).strip(),
-                "stage": str(row.get("stage", "")).strip(),
                 "speakers": [],
             }
         sessions[session_id]["speakers"].append({
@@ -122,6 +91,13 @@ def load_sessions_for_event(csv_path, event_name):
             "is_moderator": parse_is_moderator(row.get("is_moderator", "")),
         })
     return list(sessions.values())
+
+
+def load_streams_for_event(csv_path, event_name):
+    df = pd.read_csv(csv_path)
+    df = df[df["event_name"] == event_name]
+    streams = df["stage"].dropna().unique().tolist()
+    return sorted([s.strip() for s in streams if s.strip()])
 
 
 def get_event_brand(csv_path, event_name):
@@ -179,20 +155,21 @@ def fit_content(session, panel_height_in=CONTENT_PANEL["height"]):
     return title_size, speaker_size
 
 
-def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_path=None,
-                            background_image_bytes=None, background_color=None,
-                            panel_color=None, panel_opacity=100,
-                            panel_text_color=None, stage_text_color=None,
-                            include_stage=True):
+def add_slide_with_template(prs, session, template_image_bytes, text_color):
+    """Generate a slide using pre-designed template image.
+
+    Dynamic text (session title, speaker list) is rendered directly onto
+the template at fixed positions. No additional shapes or logos are added.
+    """
     layout_idx = min(6, len(prs.slide_layouts) - 1)
     slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
     slide_width = Inches(SLIDE_WIDTH_IN)
     slide_height = Inches(SLIDE_HEIGHT_IN)
 
-    # Background
-    if background_image_bytes:
+    # Template image as full slide background
+    if template_image_bytes:
         with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp.write(background_image_bytes)
+            tmp.write(template_image_bytes)
             tmp_path = tmp.name
         try:
             pic = slide.shapes.add_picture(tmp_path, 0, 0, width=slide_width, height=slide_height)
@@ -200,129 +177,14 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
             sp_tree.remove(pic._element)
             sp_tree.insert(2, pic._element)
         except Exception as e:
-            st.warning(f"Could not add background image: {e}")
+            st.warning(f"Could not add template image: {e}")
         finally:
             os.unlink(tmp_path)
-    elif background_color:
-        bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, slide_width, slide_height)
-        bg.fill.solid()
-        bg.fill.fore_color.rgb = hex_to_rgb(background_color.lstrip("#"))
-        bg.line.fill.background()
-        sp_tree = slide.shapes._spTree
-        sp_tree.remove(bg._element)
-        sp_tree.insert(2, bg._element)
-    else:
-        bg = slide.shapes.add_shape(MSO_SHAPE.RECTANGLE, 0, 0, slide_width, slide_height)
-        bg.fill.solid()
-        bg.fill.fore_color.rgb = hex_to_rgb(COLORS["default_bg"])
-        bg.line.fill.background()
-        sp_tree = slide.shapes._spTree
-        sp_tree.remove(bg._element)
-        sp_tree.insert(2, bg._element)
-
-    # Brand logo
-    if brand_logo_bytes:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp.write(brand_logo_bytes)
-            tmp_path = tmp.name
-        try:
-            img = Image.open(io.BytesIO(brand_logo_bytes))
-            img_w, img_h = img.size
-            aspect = img_w / img_h
-            max_w = BRAND_LOGO_PLACEMENT["max_width"]
-            max_h = BRAND_LOGO_PLACEMENT["max_height"]
-            if aspect >= max_w / max_h:
-                new_w = Inches(max_w)
-                new_h = Inches(max_w / aspect)
-            else:
-                new_w = Inches(max_h * aspect)
-                new_h = Inches(max_h)
-            slide.shapes.add_picture(
-                tmp_path,
-                Inches(BRAND_LOGO_PLACEMENT["left"]),
-                Inches(BRAND_LOGO_PLACEMENT["top"]),
-                width=new_w, height=new_h
-            )
-        except Exception as e:
-            st.warning(f"Could not add brand logo: {e}")
-        finally:
-            os.unlink(tmp_path)
-
-    # Informa logo
-    if informa_logo_path and os.path.exists(informa_logo_path):
-        try:
-            img = Image.open(informa_logo_path)
-            img_w, img_h = img.size
-            aspect = img_w / img_h
-            max_w = INFORMA_LOGO_PLACEMENT["max_width"]
-            max_h = INFORMA_LOGO_PLACEMENT["max_height"]
-            if aspect >= max_w / max_h:
-                new_w = Inches(max_w)
-                new_h = Inches(max_w / aspect)
-            else:
-                new_w = Inches(max_h * aspect)
-                new_h = Inches(max_h)
-            slide.shapes.add_picture(
-                informa_logo_path,
-                Inches(INFORMA_LOGO_PLACEMENT["left"]),
-                Inches(INFORMA_LOGO_PLACEMENT["top"]),
-                width=new_w, height=new_h
-            )
-        except Exception as e:
-            st.warning(f"Could not add Informa logo: {e}")
-
-    # Stage name - conditional with independent color
-    if include_stage and session["stage"]:
-        sh = Inches(SLIDE_HEIGHT_IN)
-        left = Inches(STAGE_TEXTBOX["left"])
-        top = sh - Inches(STAGE_TEXTBOX["bottom_offset"]) - Inches(STAGE_TEXTBOX["height"])
-        textbox = slide.shapes.add_textbox(left, top, Inches(STAGE_TEXTBOX["width"]), Inches(STAGE_TEXTBOX["height"]))
-        tf = textbox.text_frame
-        tf.word_wrap = False
-        p = tf.paragraphs[0]
-        p.text = session["stage"].upper()
-        p.font.size = Pt(STAGE_PT)
-        p.font.name = STAGE_FONT
-        p.font.bold = True
-        p.font.color.rgb = hex_to_rgb(stage_text_color or COLORS["stage_text_light"])
-        p.alignment = PP_ALIGN.LEFT
-
-    # Content panel with configurable color and opacity via XML
-    panel = slide.shapes.add_shape(
-        MSO_SHAPE.ROUNDED_RECTANGLE,
-        Inches(CONTENT_PANEL["left"]),
-        Inches(CONTENT_PANEL["top"]),
-        Inches(CONTENT_PANEL["width"]),
-        Inches(CONTENT_PANEL["height"]),
-    )
-    panel.fill.solid()
-    panel.fill.fore_color.rgb = hex_to_rgb((panel_color or COLORS["panel_bg"]).lstrip("#"))
-
-    # Apply transparency via direct XML manipulation
-    # PowerPoint stores alpha as a percentage * 1000 (0-100000)
-    if panel_opacity < 100:
-        from pptx.oxml.ns import qn
-        from pptx.oxml import parse_xml
-        # Access the shape's spPr through the fill's element
-        fill_elem = panel.fill._xPr
-        if fill_elem is not None:
-            # Find solidFill in the fill properties
-            solidFill = fill_elem.find(qn('a:solidFill'))
-            if solidFill is not None:
-                # Find or create srgbClr
-                srgbClr = solidFill.find(qn('a:srgbClr'))
-                if srgbClr is not None:
-                    # Add alpha element for transparency
-                    alpha_val = int((panel_opacity / 100) * 100000)
-                    alpha_xml = f'<a:alpha xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" val="{alpha_val}"/>'
-                    srgbClr.append(parse_xml(alpha_xml))
-
-    panel.line.fill.background()
 
     speakers = sorted(session["speakers"], key=lambda s: (not s["is_moderator"], s["name"]))
     title_size, speaker_size = fit_content(session)
 
-    # Session title with configurable text color (independent)
+    # Session title - positioned on template
     title_left = Inches(CONTENT_PANEL["left"] + 0.3)
     title_top = Inches(CONTENT_PANEL["top"] + 0.3)
     title_width = Inches(CONTENT_PANEL["width"] - 0.6)
@@ -335,10 +197,10 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
     p.font.size = Pt(title_size)
     p.font.name = TITLE_FONT
     p.font.bold = True
-    p.font.color.rgb = hex_to_rgb(panel_text_color or COLORS["title_text_dark"])
+    p.font.color.rgb = hex_to_rgb(text_color)
     p.alignment = PP_ALIGN.LEFT
 
-    # Speakers with configurable text color and proper bolding (uses same panel_text_color)
+    # Speakers with proper bolding
     if speakers:
         speaker_left = title_left
         speaker_top = Inches(CONTENT_PANEL["top"] + CONTENT_PANEL["height"] * 0.45)
@@ -360,21 +222,21 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
                 r.text = "Moderator: "
                 r.font.size = Pt(speaker_size)
                 r.font.name = SPEAKER_FONT
-                r.font.color.rgb = hex_to_rgb(panel_text_color or COLORS["speaker_text_dark"])
+                r.font.color.rgb = hex_to_rgb(text_color)
             # Name (bold)
             r = sp.add_run()
             r.text = speaker["name"]
             r.font.size = Pt(speaker_size)
             r.font.name = SPEAKER_FONT
             r.font.bold = True
-            r.font.color.rgb = hex_to_rgb(panel_text_color or COLORS["speaker_text_dark"])
+            r.font.color.rgb = hex_to_rgb(text_color)
             # Job title (not bold)
             if speaker["job_title"]:
                 r = sp.add_run()
                 r.text = f", {speaker['job_title']}"
                 r.font.size = Pt(speaker_size)
                 r.font.name = SPEAKER_FONT
-                r.font.color.rgb = hex_to_rgb(panel_text_color or COLORS["speaker_text_dark"])
+                r.font.color.rgb = hex_to_rgb(text_color)
             # Company (bold)
             if speaker["company"]:
                 r = sp.add_run()
@@ -382,32 +244,21 @@ def add_slide_with_branding(prs, session, brand_logo_bytes=None, informa_logo_pa
                 r.font.size = Pt(speaker_size)
                 r.font.name = SPEAKER_FONT
                 r.font.bold = True
-                r.font.color.rgb = hex_to_rgb(panel_text_color or COLORS["speaker_text_dark"])
+                r.font.color.rgb = hex_to_rgb(text_color)
 
     return slide
 
 
-def generate_slides(csv_path, event_name, brand_logo_bytes=None,
-                    informa_logo_path=None, background_image_bytes=None,
-                    background_color=None, panel_color=None, panel_opacity=100,
-                    panel_text_color=None, stage_text_color=None,
-                    include_stage=True):
-    sessions = load_sessions_for_event(csv_path, event_name)
+def generate_slides(csv_path, event_name, stream, template_image_bytes, text_color):
+    sessions = load_sessions_for_event(csv_path, event_name, stream)
     prs = Presentation()
     prs.slide_width = Emu(int(Inches(SLIDE_WIDTH_IN)))
     prs.slide_height = Emu(int(Inches(SLIDE_HEIGHT_IN)))
     for session in sessions:
-        add_slide_with_branding(
+        add_slide_with_template(
             prs, session,
-            brand_logo_bytes=brand_logo_bytes,
-            informa_logo_path=informa_logo_path,
-            background_image_bytes=background_image_bytes,
-            background_color=background_color,
-            panel_color=panel_color,
-            panel_opacity=panel_opacity,
-            panel_text_color=panel_text_color,
-            stage_text_color=stage_text_color,
-            include_stage=include_stage,
+            template_image_bytes=template_image_bytes,
+            text_color=text_color,
         )
     output = io.BytesIO()
     prs.save(output)
@@ -424,80 +275,55 @@ def hex_to_rgb_tuple(hex_str):
     return tuple(int(hex_str[i:i+2], 16) for i in (0, 2, 4))
 
 
-def render_slide_preview_pil(target_width_px, session, brand_logo_bytes, informa_logo_path,
-                               background_image_bytes=None, background_color=None,
-                               panel_color=None, panel_opacity=100,
-                               title_text_color=None, speaker_text_color=None, stage_text_color=None):
-    """Render a slide preview using PIL Image at exact slide proportions with accurate text styling."""
+def render_slide_preview_pil(target_width_px, session, template_image_bytes, text_color):
+    """Render a slide preview using PIL Image with pre-designed template.
+
+    Just overlays dynamic text (session title, speaker list) onto the template image.
+    """
     target_height_px = int(target_width_px / SLIDE_ASPECT)
 
-    # Background
-    if background_image_bytes:
+    # Template as background
+    if template_image_bytes:
         try:
-            bg = Image.open(io.BytesIO(background_image_bytes))
+            bg = Image.open(io.BytesIO(template_image_bytes))
             bg = bg.resize((target_width_px, target_height_px), Image.LANCZOS)
         except:
-            bg_color = hex_to_rgb_tuple(background_color or COLORS["default_bg"])
+            bg_color = hex_to_rgb_tuple(COLORS["default_bg"])
             bg = Image.new("RGB", (target_width_px, target_height_px), bg_color)
-    elif background_color:
-        bg_color = hex_to_rgb_tuple(background_color.lstrip("#"))
-        bg = Image.new("RGB", (target_width_px, target_height_px), bg_color)
     else:
         bg_color = hex_to_rgb_tuple(COLORS["default_bg"])
         bg = Image.new("RGB", (target_width_px, target_height_px), bg_color)
 
-    # PROPER ALPHA BLENDING: Create overlay for panel with transparency
-    panel_left = int((CONTENT_PANEL["left"] / SLIDE_WIDTH_IN) * target_width_px)
-    panel_top = int((CONTENT_PANEL["top"] / SLIDE_HEIGHT_IN) * target_height_px)
-    panel_right = int(((CONTENT_PANEL["left"] + CONTENT_PANEL["width"]) / SLIDE_WIDTH_IN) * target_width_px)
-    panel_bottom = int(((CONTENT_PANEL["top"] + CONTENT_PANEL["height"]) / SLIDE_HEIGHT_IN) * target_height_px)
-
-    # Convert background to RGBA for compositing
     if bg.mode != 'RGBA':
         bg = bg.convert('RGBA')
 
-    # Create transparent overlay same size as slide
-    overlay = Image.new('RGBA', (target_width_px, target_height_px), (0, 0, 0, 0))
-    overlay_draw = ImageDraw.Draw(overlay, 'RGBA')
-
-    # Draw panel onto overlay with proper alpha
-    panel_rgb = hex_to_rgb_tuple(panel_color or COLORS["panel_bg"])
-    alpha = int(255 * panel_opacity / 100)
-    overlay_draw.rounded_rectangle(
-        [panel_left, panel_top, panel_right, panel_bottom],
-        radius=12,
-        fill=panel_rgb + (alpha,)
-    )
-
-    # Composite overlay onto background using proper alpha blending
-    bg = Image.alpha_composite(bg, overlay)
-
-    # Now draw text directly onto the composited image at full opacity
     draw = ImageDraw.Draw(bg, 'RGBA')
 
-    # Load bundled fonts from fonts/ directory (works on any machine, local or cloud)
+    # Load bundled fonts
     script_dir = Path(__file__).parent
     fonts_dir = script_dir / "fonts"
     try:
         title_font = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.04))
         speaker_font_regular = ImageFont.truetype(str(fonts_dir / "OpenSans-Regular.ttf"), int(target_width_px * 0.023))
         speaker_font_bold = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.023))
-        stage_font = ImageFont.truetype(str(fonts_dir / "OpenSans-Bold.ttf"), int(target_width_px * 0.024))
     except Exception as e:
-        # Fallback to default if fonts missing
         st.warning(f"Bundled fonts not found at {fonts_dir}, using default font: {e}")
         title_font = ImageFont.load_default()
         speaker_font_regular = ImageFont.load_default()
         speaker_font_bold = ImageFont.load_default()
-        stage_font = ImageFont.load_default()
 
-    # Session title (bold) - positioned inside the panel with proper margins
+    # Content panel positions
+    panel_left = int((CONTENT_PANEL["left"] / SLIDE_WIDTH_IN) * target_width_px)
+    panel_top = int((CONTENT_PANEL["top"] / SLIDE_HEIGHT_IN) * target_height_px)
+    panel_right = int(((CONTENT_PANEL["left"] + CONTENT_PANEL["width"]) / SLIDE_WIDTH_IN) * target_width_px)
+
+    # Session title (bold)
     title_x = panel_left + int(target_width_px * 0.025)
     title_y = panel_top + int(target_height_px * 0.08)
     title = session.get("session_title", "")
-    title_color = hex_to_rgb_tuple(title_text_color or COLORS["title_text_dark"])
+    text_color_tuple = hex_to_rgb_tuple(text_color or COLORS["title_text_dark"])
 
-    # Simple text wrapping for title to avoid overflow
+    # Simple text wrapping for title
     max_title_width = panel_right - panel_left - int(target_width_px * 0.05)
     words = title.split()
     lines = []
@@ -517,12 +343,11 @@ def render_slide_preview_pil(target_width_px, session, brand_logo_bytes, informa
     # Draw wrapped title
     line_height = int(target_height_px * 0.06)
     for i, line in enumerate(lines[:2]):  # Max 2 lines
-        draw.text((title_x, title_y + i * line_height), line, font=title_font, fill=title_color)
+        draw.text((title_x, title_y + i * line_height), line, font=title_font, fill=text_color_tuple)
 
-    # Speakers with proper bolding - start below title area
+    # Speakers with proper bolding
     speakers = sorted(session.get("speakers", []), key=lambda s: (not s["is_moderator"], s["name"]))
     speaker_y = panel_top + int(target_height_px * 0.28)
-    text_color = hex_to_rgb_tuple(speaker_text_color or COLORS["speaker_text_dark"])
     line_spacing = int(target_height_px * 0.055)
     space_width = int(target_width_px * 0.008)
 
@@ -532,89 +357,35 @@ def render_slide_preview_pil(target_width_px, session, brand_logo_bytes, informa
         # Moderator label (not bold)
         if speaker["is_moderator"]:
             mod_text = "Moderator: "
-            draw.text((current_x, speaker_y), mod_text, font=speaker_font_regular, fill=text_color)
+            draw.text((current_x, speaker_y), mod_text, font=speaker_font_regular, fill=text_color_tuple)
             bbox = draw.textbbox((current_x, speaker_y), mod_text, font=speaker_font_regular)
             current_x += (bbox[2] - bbox[0]) + space_width
 
         # Name (bold)
         name = speaker["name"]
-        draw.text((current_x, speaker_y), name, font=speaker_font_bold, fill=text_color)
+        draw.text((current_x, speaker_y), name, font=speaker_font_bold, fill=text_color_tuple)
         bbox = draw.textbbox((current_x, speaker_y), name, font=speaker_font_bold)
         current_x += (bbox[2] - bbox[0])
 
         # Job title (not bold)
         if speaker["job_title"]:
             comma = ", "
-            draw.text((current_x, speaker_y), comma, font=speaker_font_regular, fill=text_color)
+            draw.text((current_x, speaker_y), comma, font=speaker_font_regular, fill=text_color_tuple)
             bbox = draw.textbbox((current_x, speaker_y), comma, font=speaker_font_regular)
             current_x += (bbox[2] - bbox[0])
-            draw.text((current_x, speaker_y), speaker["job_title"], font=speaker_font_regular, fill=text_color)
+            draw.text((current_x, speaker_y), speaker["job_title"], font=speaker_font_regular, fill=text_color_tuple)
             bbox = draw.textbbox((current_x, speaker_y), speaker["job_title"], font=speaker_font_regular)
             current_x += (bbox[2] - bbox[0])
 
         # Company (bold)
         if speaker["company"]:
             comma = ", "
-            draw.text((current_x, speaker_y), comma, font=speaker_font_regular, fill=text_color)
+            draw.text((current_x, speaker_y), comma, font=speaker_font_regular, fill=text_color_tuple)
             bbox = draw.textbbox((current_x, speaker_y), comma, font=speaker_font_regular)
             current_x += (bbox[2] - bbox[0])
-            draw.text((current_x, speaker_y), speaker["company"], font=speaker_font_bold, fill=text_color)
+            draw.text((current_x, speaker_y), speaker["company"], font=speaker_font_bold, fill=text_color_tuple)
 
         speaker_y += line_spacing
-
-    # Brand logo (top-left)
-    if brand_logo_bytes:
-        try:
-            logo = Image.open(io.BytesIO(brand_logo_bytes))
-            max_logo_w = int((BRAND_LOGO_PLACEMENT["max_width"] / SLIDE_WIDTH_IN) * target_width_px)
-            max_logo_h = int((BRAND_LOGO_PLACEMENT["max_height"] / SLIDE_HEIGHT_IN) * target_height_px)
-            aspect = logo.width / logo.height
-            if max_logo_w / aspect <= max_logo_h:
-                logo_w = max_logo_w
-                logo_h = int(logo_w / aspect)
-            else:
-                logo_h = max_logo_h
-                logo_w = int(logo_h * aspect)
-            logo = logo.resize((logo_w, logo_h), Image.LANCZOS)
-            logo_x = int((BRAND_LOGO_PLACEMENT["left"] / SLIDE_WIDTH_IN) * target_width_px)
-            logo_y = int((BRAND_LOGO_PLACEMENT["top"] / SLIDE_HEIGHT_IN) * target_height_px)
-            if logo.mode == 'RGBA':
-                bg.paste(logo, (logo_x, logo_y), logo)
-            else:
-                bg.paste(logo, (logo_x, logo_y))
-        except:
-            pass
-
-    # Informa logo (bottom-right)
-    if informa_logo_path and os.path.exists(informa_logo_path):
-        try:
-            informa = Image.open(informa_logo_path)
-            max_logo_w = int((INFORMA_LOGO_PLACEMENT["max_width"] / SLIDE_WIDTH_IN) * target_width_px)
-            max_logo_h = int((INFORMA_LOGO_PLACEMENT["max_height"] / SLIDE_HEIGHT_IN) * target_height_px)
-            aspect = informa.width / informa.height
-            if max_logo_w / aspect <= max_logo_h:
-                logo_w = max_logo_w
-                logo_h = int(logo_w / aspect)
-            else:
-                logo_h = max_logo_h
-                logo_w = int(logo_h * aspect)
-            informa = informa.resize((logo_w, logo_h), Image.LANCZOS)
-            logo_x = int((INFORMA_LOGO_PLACEMENT["left"] / SLIDE_WIDTH_IN) * target_width_px)
-            logo_y = int((INFORMA_LOGO_PLACEMENT["top"] / SLIDE_HEIGHT_IN) * target_height_px)
-            if informa.mode == 'RGBA':
-                bg.paste(informa, (logo_x, logo_y), informa)
-            else:
-                bg.paste(informa, (logo_x, logo_y))
-        except:
-            pass
-
-    # Stage name (bottom-left)
-    if session.get("stage"):
-        stage_text = session["stage"].upper()
-        stage_x = int((STAGE_TEXTBOX["left"] / SLIDE_WIDTH_IN) * target_width_px)
-        stage_y = int(((SLIDE_HEIGHT_IN - STAGE_TEXTBOX["bottom_offset"] - 0.2) / SLIDE_HEIGHT_IN) * target_height_px)
-        stage_color_rgb = hex_to_rgb_tuple(stage_text_color or COLORS["stage_text_dark"])
-        draw.text((stage_x, stage_y), stage_text, font=stage_font, fill=stage_color_rgb)
 
     return bg
 
@@ -636,15 +407,23 @@ def main():
     if "csv_path" not in st.session_state:
         st.session_state.csv_path = "sample_sessions.csv"
 
-    # Left column - Compact Controls
+    # Initialize control values in session state
+    if "selected_event" not in st.session_state:
+        st.session_state.selected_event = None
+    if "selected_stream" not in st.session_state:
+        st.session_state.selected_stream = None
+
+    # Left column - Compact Controls (simplified to 4 controls)
     with left_col:
-        # Data & Event Card - always uses sample data
+        csv_path = "sample_sessions.csv"
+        selected_event = None
+        selected_stream = None
+        template_bytes = None
+        text_color = "#" + COLORS["title_text_dark"]
+
+        # 1. Event selection
         with st.container(border=True):
             st.markdown("**Event**")
-
-            csv_path = "sample_sessions.csv"
-            selected_event = None
-
             try:
                 events = load_events(csv_path)
                 if events:
@@ -652,75 +431,57 @@ def main():
                     selected_event = st.selectbox(
                         "Select event",
                         event_names,
+                        key="event_select"
                     )
+                    st.session_state.selected_event = selected_event
                 else:
                     st.warning("No events found")
             except Exception as e:
-                st.error(f"Could not load: {e}")
+                st.error(f"Could not load events: {e}")
 
-        # Branding Card - compressed layout
-        with st.container(border=True):
-            st.markdown("**Branding**")
-
-            # 1. Brand Logo
-            brand_logo_file = st.file_uploader(
-                "Brand logo",
-                type=["png", "jpg", "jpeg"],
-            )
-            brand_logo_bytes = brand_logo_file.getvalue() if brand_logo_file else None
-            if brand_logo_bytes:
-                st.image(brand_logo_bytes, width=50)
-
-            # 2. Informa Logo
-            informa_choice = st.segmented_control(
-                "Informa logo",
-                ["Light", "Dark", "None"],
-                default="Light",
-            )
-            informa_logo_path = None
-            if informa_choice == "Light":
-                informa_logo_path = str(INFORMA_LOGO_LIGHT) if INFORMA_LOGO_LIGHT.exists() else None
-            elif informa_choice == "Dark":
-                informa_logo_path = str(INFORMA_LOGO_DARK) if INFORMA_LOGO_DARK.exists() else None
-
-            # 3. Background choice
-            bg_choice = st.segmented_control(
-                "Background",
-                ["Default", "Color", "Image"],
-                default="Default",
-            )
-            bg_image_bytes = None
-            bg_color = None
-            if bg_choice == "Image":
-                bg_file = st.file_uploader("Background image", type=["png", "jpg", "jpeg"])
-                if bg_file:
-                    bg_image_bytes = bg_file.getvalue()
-
-            # 4. COLORS SECTION
-            st.markdown("**Colors**")
-            color_cols = st.columns([2, 2, 1.5, 1.5])
-            with color_cols[0]:
-                panel_color = st.color_picker("Panel", value="#" + COLORS["panel_bg"])
-            with color_cols[1]:
-                panel_text_color = st.color_picker("Panel text", value="#" + COLORS["title_text_dark"])
-            with color_cols[2]:
-                panel_opacity = st.number_input(
-                    "Opacity %",
-                    min_value=0,
-                    max_value=100,
-                    value=100,
-                    step=5,
-                )
-            with color_cols[3]:
-                stage_text_color = st.color_picker("Stage", value="#" + COLORS["stage_text_light"])
-            if bg_choice == "Color":
-                bg_color = st.color_picker("Background", value="#F5F5F5")
-
-            # 5. Stage toggle
-            include_stage = st.checkbox("Show stage name", value=True)
-
-        # Generate with Indigo CTA color and Ultramarine hover (#003CB2)
+        # 2. Stream selection (populated from stage column)
         if selected_event:
+            with st.container(border=True):
+                st.markdown("**Stream**")
+                try:
+                    streams = load_streams_for_event(csv_path, selected_event)
+                    if streams:
+                        selected_stream = st.selectbox(
+                            "Select stream",
+                            streams,
+                            key="stream_select"
+                        )
+                        st.session_state.selected_stream = selected_stream
+                    else:
+                        st.warning("No streams found for this event")
+                except Exception as e:
+                    st.error(f"Could not load streams: {e}")
+
+        # 3. Template upload (replaces Background)
+        if selected_event and selected_stream:
+            with st.container(border=True):
+                st.markdown("**Template**")
+                template_file = st.file_uploader(
+                    "Upload template image",
+                    type=["png", "jpg", "jpeg"],
+                    help="Upload a template that includes all fixed design elements"
+                )
+                template_bytes = template_file.getvalue() if template_file else None
+                if template_bytes:
+                    st.image(template_bytes, width=200)
+
+        # 4. Text color (only remaining color control)
+        if selected_event and selected_stream:
+            with st.container(border=True):
+                st.markdown("**Text Color**")
+                text_color = st.color_picker(
+                    "Text color",
+                    value="#" + COLORS["title_text_dark"],
+                    help="Applies to all dynamic text (session title, speakers)"
+                )
+
+        # Generate button with Indigo CTA color and Ultramarine hover
+        if selected_event and selected_stream:
             st.markdown("""
             <style>
                 .stButton>button {
@@ -751,67 +512,48 @@ def main():
                 with st.spinner("Generating..."):
                     try:
                         output_bytes, num_slides = generate_slides(
-                            csv_path, selected_event,
-                            brand_logo_bytes=brand_logo_bytes,
-                            informa_logo_path=informa_logo_path,
-                            background_image_bytes=bg_image_bytes,
-                            background_color=bg_color,
-                            panel_color=panel_color,
-                            panel_opacity=panel_opacity,
-                            panel_text_color=panel_text_color,
-                            stage_text_color=stage_text_color,
-                            include_stage=include_stage,
+                            csv_path, selected_event, selected_stream,
+                            template_image_bytes=template_bytes,
+                            text_color=text_color.lstrip("#"),
                         )
                         st.success(f"Generated {num_slides} slides!")
                         st.download_button(
                             label="Download PPTX",
                             data=output_bytes,
-                            file_name=f"{selected_event.replace(' ', '_')}_holding_slides.pptx",
+                            file_name=f"{selected_event.replace(' ', '_')}_{selected_stream.replace(' ', '_')}_holding_slides.pptx",
                             mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
                             use_container_width=True,
                         )
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-    # Right column - Larger Preview with exact slide proportions
+    # Right column - Preview
     with right_col:
         st.markdown("**Preview**")
 
+        # Default preview session
         preview_session = {
             "session_title": "Sample Session: The Future of AI in Healthcare",
-            "stage": "Main Stage" if include_stage else "",
             "speakers": [
                 {"name": "Dr. Sarah Chen", "job_title": "CMO", "company": "HealthTech", "is_moderator": True},
                 {"name": "James Rodriguez", "job_title": "VP Innovation", "company": "MedGlobal", "is_moderator": False},
             ]
         }
 
-        if csv_path and selected_event:
+        # Load actual session data if available
+        if selected_event and selected_stream:
             try:
-                sessions = load_sessions_for_event(csv_path, selected_event)
+                sessions = load_sessions_for_event(csv_path, selected_event, selected_stream)
                 if sessions:
                     preview_session = sessions[0]
-                    if not include_stage:
-                        preview_session["stage"] = ""
             except:
                 pass
-
-        # Get colors - panel text and stage are now independent
-        panel_text_hex = panel_text_color if 'panel_text_color' in locals() else COLORS["title_text_dark"]
-        stage_text_hex = stage_text_color if 'stage_text_color' in locals() else COLORS["stage_text_light"]
 
         preview_img = render_slide_preview_pil(
             900,
             preview_session,
-            brand_logo_bytes,
-            informa_logo_path,
-            bg_image_bytes,
-            bg_color,
-            panel_color if 'panel_color' in locals() else None,
-            panel_opacity if 'panel_opacity' in locals() else 100,
-            panel_text_hex,  # Title text color (same as speaker text in this simplified version)
-            panel_text_hex,  # Speaker text color
-            stage_text_hex,  # Stage text color - INDEPENDENT
+            template_bytes,
+            text_color.lstrip("#") if 'text_color' in locals() else COLORS["title_text_dark"],
         )
         st.image(preview_img, use_container_width=True)
 
