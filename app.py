@@ -395,10 +395,25 @@ def render_slide_preview_pil(target_width_px, session, template_image_bytes, tex
 # -----------------------------------------------------------------------------
 
 def main():
-    st.set_page_config(page_title="Informa Connect Session Slide Builder", layout="wide")
+    st.set_page_config(
+        page_title="Holding Slides | Informa Connect",
+        page_icon="🎨",
+        layout="wide",
+        initial_sidebar_state="collapsed",
+    )
 
-    # Large professional title
-    st.markdown("<h1 style='font-size: 2.5rem; margin-bottom: 0.5rem;'>Informa Connect Session Slide Builder</h1>", unsafe_allow_html=True)
+    # Title with brand color and subtitle
+    st.markdown(
+        f"""
+        <h1 style='font-size: 2.5rem; margin-bottom: 0.25rem; color: #{COLORS["cta_bg"]};'>
+            Informa Connect Session Slide Builder
+        </h1>
+        <p style='color: #6B7280; font-size: 1rem; margin-bottom: 1.5rem;'>
+            Generate professional holding slides for your event sessions
+        </p>
+        """,
+        unsafe_allow_html=True
+    )
 
     # Unequal columns - controls thinner, preview larger
     left_col, right_col = st.columns([1, 2])
@@ -421,64 +436,73 @@ def main():
         template_bytes = None
         text_color = "#" + COLORS["title_text_dark"]
 
-        # 1. Event selection
+        # Combine Event and Stream into one container with two columns
         with st.container(border=True):
-            st.markdown("**Event**")
-            try:
-                events = load_events(csv_path)
-                if events:
-                    event_names = [e["event_name"] for e in events]
-                    selected_event = st.selectbox(
-                        "Select event",
-                        event_names,
-                        key="event_select"
-                    )
-                    st.session_state.selected_event = selected_event
-                else:
-                    st.warning("No events found")
-            except Exception as e:
-                st.error(f"Could not load events: {e}")
+            event_stream_cols = st.columns(2)
 
-        # 2. Stream selection (populated from stage column)
-        if selected_event:
-            with st.container(border=True):
-                st.markdown("**Stream**")
+            with event_stream_cols[0]:
+                st.markdown("**Event**")
                 try:
-                    streams = load_streams_for_event(csv_path, selected_event)
-                    if streams:
-                        selected_stream = st.selectbox(
-                            "Select stream",
-                            streams,
-                            key="stream_select"
+                    events = load_events(csv_path)
+                    if events:
+                        event_names = [e["event_name"] for e in events]
+                        selected_event = st.selectbox(
+                            "",
+                            event_names,
+                            key="event_select",
+                            label_visibility="collapsed"
                         )
-                        st.session_state.selected_stream = selected_stream
+                        st.session_state.selected_event = selected_event
                     else:
-                        st.warning("No streams found for this event")
+                        st.warning("No events found")
                 except Exception as e:
-                    st.error(f"Could not load streams: {e}")
+                    st.error(f"Could not load events: {e}")
 
-        # 3. Template upload (replaces Background)
+            with event_stream_cols[1]:
+                st.markdown("**Stream**")
+                if selected_event:
+                    try:
+                        streams = load_streams_for_event(csv_path, selected_event)
+                        if streams:
+                            selected_stream = st.selectbox(
+                                "",
+                                streams,
+                                key="stream_select",
+                                label_visibility="collapsed"
+                            )
+                            st.session_state.selected_stream = selected_stream
+                        else:
+                            st.warning("No streams found")
+                    except Exception as e:
+                        st.error(f"Could not load streams: {e}")
+                else:
+                    st.selectbox("", ["Select event first"], disabled=True, label_visibility="collapsed")
+
+        # Combine Template and Text Color into one container with two columns
         if selected_event and selected_stream:
             with st.container(border=True):
-                st.markdown("**Template**")
-                template_file = st.file_uploader(
-                    "Upload template image",
-                    type=["png", "jpg", "jpeg"],
-                    help="Upload a template that includes all fixed design elements"
-                )
-                template_bytes = template_file.getvalue() if template_file else None
-                if template_bytes:
-                    st.image(template_bytes, width=200)
+                template_color_cols = st.columns([3, 2])
 
-        # 4. Text color (only remaining color control)
-        if selected_event and selected_stream:
-            with st.container(border=True):
-                st.markdown("**Text Color**")
-                text_color = st.color_picker(
-                    "Text color",
-                    value="#" + COLORS["title_text_dark"],
-                    help="Applies to all dynamic text (session title, speakers)"
-                )
+                with template_color_cols[0]:
+                    st.markdown("**Template**")
+                    template_file = st.file_uploader(
+                        "",
+                        type=["png", "jpg", "jpeg"],
+                        help="Upload a template with all fixed design elements baked in",
+                        label_visibility="collapsed"
+                    )
+                    template_bytes = template_file.getvalue() if template_file else None
+                    if template_bytes:
+                        st.image(template_bytes, use_container_width=True)
+
+                with template_color_cols[1]:
+                    st.markdown("**Text Color**")
+                    text_color = st.color_picker(
+                        "",
+                        value="#" + COLORS["title_text_dark"],
+                        help="Applies to session title and speaker list",
+                        label_visibility="collapsed"
+                    )
 
         # Generate button with Indigo CTA color and Ultramarine hover
         if selected_event and selected_stream:
@@ -509,7 +533,7 @@ def main():
             )
 
             if generate_clicked:
-                with st.spinner("Generating..."):
+                with st.spinner("Generating slides..."):
                     try:
                         output_bytes, num_slides = generate_slides(
                             csv_path, selected_event, selected_stream,
@@ -527,16 +551,19 @@ def main():
                     except Exception as e:
                         st.error(f"Error: {e}")
 
-    # Right column - Preview
+    # Right column - Preview with styled container
     with right_col:
         st.markdown("**Preview**")
+
+        # Check if template is uploaded for empty state
+        has_template = template_bytes is not None
 
         # Default preview session
         preview_session = {
             "session_title": "Sample Session: The Future of AI in Healthcare",
             "speakers": [
-                {"name": "Dr. Sarah Chen", "job_title": "CMO", "company": "HealthTech", "is_moderator": True},
-                {"name": "James Rodriguez", "job_title": "VP Innovation", "company": "MedGlobal", "is_moderator": False},
+                {"name": "Dr. Sarah Chen", "job_title": "CMO", "company": "HealthTech", "is_moderator": True, "headshot_url": None},
+                {"name": "James Rodriguez", "job_title": "VP Innovation", "company": "MedGlobal", "is_moderator": False, "headshot_url": None},
             ]
         }
 
@@ -549,13 +576,38 @@ def main():
             except:
                 pass
 
-        preview_img = render_slide_preview_pil(
-            900,
-            preview_session,
-            template_bytes,
-            text_color.lstrip("#") if 'text_color' in locals() else COLORS["title_text_dark"],
-        )
-        st.image(preview_img, use_container_width=True)
+        # Render preview or show empty state
+        if has_template:
+            preview_img = render_slide_preview_pil(
+                900,
+                preview_session,
+                template_bytes,
+                text_color.lstrip("#") if 'text_color' in locals() else COLORS["title_text_dark"],
+            )
+            st.image(preview_img, use_container_width=True)
+        else:
+            # Empty state with subtle styling
+            st.markdown(
+                """
+                <div style='
+                    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+                    border: 2px dashed #cbd5e1;
+                    border-radius: 12px;
+                    padding: 4rem 2rem;
+                    text-align: center;
+                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+                '>
+                    <div style='font-size: 3rem; margin-bottom: 1rem;'>🖼️</div>
+                    <div style='color: #64748b; font-size: 1.1rem; font-weight: 500;'>
+                        Upload a template to see your preview
+                    </div>
+                    <div style='color: #94a3b8; font-size: 0.9rem; margin-top: 0.5rem;'>
+                        Your slide design will appear here
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True
+            )
 
 
 if __name__ == "__main__":
