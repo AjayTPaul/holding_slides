@@ -1,5 +1,4 @@
 event_name,session_id,session_title,stage,speaker_name,job_title,company,is_moderator,brand
-NetworkX London 2026,NET001,Opening Keynote: The Future of Networking Technology,HEADLINERS,Sarah Chen,Chief Technology Officer,NetCore Systems,no,Informa Tech
 NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,Marcus Williams,VP of Engineering,CloudScale AI,yes,Informa Tech
 NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,Elena Rodriguez,Senior Network Architect,TelcoPro,no,Informa Tech
 NetworkX London 2026,NET002,Panel: AI in Network Infrastructure,HEADLINERS,James Park,Director of AI Research,FutureNet Labs,no,Informa Tech
