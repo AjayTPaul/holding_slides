@@ -8,7 +8,9 @@ Usage: streamlit run app.py
 import base64
 import io
 import os
+import subprocess
 import tempfile
+from copy import deepcopy
 from pathlib import Path
 
 import streamlit as st
@@ -157,98 +159,336 @@ def fit_content(session, panel_height_in=CONTENT_PANEL["height"]):
     return title_size, speaker_size
 
 
-def add_slide_with_template(prs, session, template_image_bytes, text_color):
-    """Generate a slide using pre-designed template image.
+def substitute_tokens_in_paragraph(p, session, speaker=None, scale=1.0, context=""):
+    """Substitute tokens in a paragraph, handling PowerPoint's run splitting.
 
-    Dynamic text (session title, speaker list) is rendered directly onto
-the template at fixed positions. No additional shapes or logos are added.
+    PowerPoint may split tokens across runs (e.g., "{session" in run0, "_title}" in run1).
+    This function merges runs, substitutes, then rebuilds runs to preserve formatting.
     """
-    layout_idx = min(6, len(prs.slide_layouts) - 1)
-    slide = prs.slides.add_slide(prs.slide_layouts[layout_idx])
-    slide_width = Inches(SLIDE_WIDTH_IN)
-    slide_height = Inches(SLIDE_HEIGHT_IN)
+    from copy import deepcopy
 
-    # Template image as full slide background
-    if template_image_bytes:
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp.write(template_image_bytes)
-            tmp_path = tmp.name
-        try:
-            pic = slide.shapes.add_picture(tmp_path, 0, 0, width=slide_width, height=slide_height)
-            sp_tree = slide.shapes._spTree
-            sp_tree.remove(pic._element)
-            sp_tree.insert(2, pic._element)
-        except Exception as e:
-            st.warning(f"Could not add template image: {e}")
-        finally:
-            os.unlink(tmp_path)
+    # Debug: print raw run text with context
+    print(f"DEBUG paragraph runs {context}:")
+    for i, run in enumerate(p.runs):
+        print(f"  run[{i}] = {repr(run.text)}")
 
-    speakers = sorted(session["speakers"], key=lambda s: (not s["is_moderator"], s["name"]))
-    title_size, speaker_size = fit_content(session)
+    # Get full paragraph text
+    full_text = get_paragraph_text(p)
+    print(f"  full_text = {repr(full_text)}")
 
-    # Session title - positioned on template
-    title_left = Inches(CONTENT_PANEL["left"] + 0.3)
-    title_top = Inches(CONTENT_PANEL["top"] + 0.3)
-    title_width = Inches(CONTENT_PANEL["width"] - 0.6)
-    title_height = Inches(CONTENT_PANEL["height"] * 0.4)
-    title_box = slide.shapes.add_textbox(title_left, title_top, title_width, title_height)
-    tf = title_box.text_frame
-    tf.word_wrap = True
-    p = tf.paragraphs[0]
-    p.text = session["session_title"]
-    p.font.size = Pt(title_size)
-    p.font.name = TITLE_FONT
-    p.font.bold = True
-    p.font.color.rgb = hex_to_rgb(text_color)
-    p.alignment = PP_ALIGN.LEFT
+    # Check if any tokens present
+    tokens = ["{session_title}", "{speaker_name}", "{job_title}", "{company}"]
+    if not any(t in full_text for t in tokens):
+        print(f"  No tokens found, skipping")
+        return
 
-    # Speakers with proper bolding
-    if speakers:
-        speaker_left = title_left
-        speaker_top = Inches(CONTENT_PANEL["top"] + CONTENT_PANEL["height"] * 0.45)
-        speaker_width = title_width
-        speaker_height = Inches(CONTENT_PANEL["height"] * 0.5)
-        speaker_box = slide.shapes.add_textbox(speaker_left, speaker_top, speaker_width, speaker_height)
-        stf = speaker_box.text_frame
-        stf.word_wrap = True
-        for i, speaker in enumerate(speakers):
-            if i == 0:
-                sp = stf.paragraphs[0]
-            else:
-                sp = stf.add_paragraph()
-            sp.space_before = Pt(6)
-            sp.clear()
-            # Moderator label (not bold)
-            if speaker["is_moderator"]:
-                r = sp.add_run()
-                r.text = "Moderator: "
-                r.font.size = Pt(speaker_size)
-                r.font.name = SPEAKER_FONT
-                r.font.color.rgb = hex_to_rgb(text_color)
-            # Name (bold)
-            r = sp.add_run()
-            r.text = speaker["name"]
-            r.font.size = Pt(speaker_size)
-            r.font.name = SPEAKER_FONT
-            r.font.bold = True
-            r.font.color.rgb = hex_to_rgb(text_color)
-            # Job title (not bold)
-            if speaker["job_title"]:
-                r = sp.add_run()
-                r.text = f", {speaker['job_title']}"
-                r.font.size = Pt(speaker_size)
-                r.font.name = SPEAKER_FONT
-                r.font.color.rgb = hex_to_rgb(text_color)
-            # Company (bold)
-            if speaker["company"]:
-                r = sp.add_run()
-                r.text = f", {speaker['company']}"
-                r.font.size = Pt(speaker_size)
-                r.font.name = SPEAKER_FONT
-                r.font.bold = True
-                r.font.color.rgb = hex_to_rgb(text_color)
+    # Prepare replacement values
+    session_title = session.get("session_title", "")
+    speaker_name = speaker.get("name", "") if speaker else "{NAME}"
+    job_title = speaker.get("job_title", "") if speaker else "{JOB}"
+    company = speaker.get("company", "") if speaker else "{COMPANY}"
 
-    return slide
+    # Perform substitutions on the full text
+    new_text = full_text
+    new_text = new_text.replace("{session_title}", session_title)
+    new_text = new_text.replace("{speaker_name}", speaker_name)
+    new_text = new_text.replace("{job_title}", job_title)
+    new_text = new_text.replace("{company}", company)
+
+    print(f"  after substitution = {repr(new_text)}")
+
+    # Rebuild runs: keep first run's formatting, put all text there, clear others
+    if p.runs:
+        first_run = p.runs[0]
+        first_run.text = new_text
+
+        # Clear remaining runs
+        for run in p.runs[1:]:
+            run.text = ""
+
+        # Apply font scaling
+        if scale < 1.0 and first_run.font.size:
+            from pptx.util import Pt
+            first_run.font.size = Pt(int(first_run.font.size.pt * scale))
+
+
+def substitute_tokens_in_shape(shape, session):
+    """Substitute tokens in a shape's text frame. Returns True if this is a speaker template."""
+    if not shape.has_text_frame:
+        return False
+
+    tf = shape.text_frame
+    has_speaker_template = False
+
+    for p in tf.paragraphs:
+        full_text = get_paragraph_text(p)
+        if "{speaker_name}" in full_text:
+            has_speaker_template = True
+
+    return has_speaker_template
+
+
+def get_paragraph_text(p):
+    """Get paragraph text by concatenating all runs.
+
+    Handles PowerPoint splitting tokens across multiple runs.
+    Same logic used by both generation and preview scanning.
+    """
+    return "".join(run.text for run in p.runs)
+
+
+def scan_template_for_tokens(template_bytes):
+    """Scan template PPTX to find which tokens are actually present.
+
+    Returns a dict with token names as keys and True/False for presence.
+    Tokens: session_title, speaker_name, job_title, company
+    """
+    import re
+    from pptx import Presentation
+    import tempfile
+    import os
+
+    TOKEN_PATTERNS = {
+        'session_title': r'\{session_title\}',
+        'speaker_name': r'\{speaker_name\}',
+        'job_title': r'\{job_title\}',
+        'company': r'\{company\}',
+    }
+
+    found_tokens = {
+        'session_title': False,
+        'speaker_name': False,
+        'job_title': False,
+        'company': False,
+    }
+
+    # Write to temp file and load
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        data = template_bytes.getvalue() if hasattr(template_bytes, 'getvalue') else template_bytes
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        prs = Presentation(tmp_path)
+        # Check all slides for tokens
+        for slide in prs.slides:
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+                for p in shape.text_frame.paragraphs:
+                    para_text = get_paragraph_text(p)
+                    for token_name, pattern in TOKEN_PATTERNS.items():
+                        if re.search(pattern, para_text):
+                            found_tokens[token_name] = True
+    finally:
+        os.unlink(tmp_path)
+
+    return found_tokens
+
+
+def extract_slide_confirmation(pptx_bytes, template_bytes=None):
+    """Extract text confirmation from generated PPTX showing substituted values with per-token status.
+
+    Only checks and displays tokens that exist in the original template.
+
+    Args:
+        pptx_bytes: The generated output PPTX
+        template_bytes: The original template PPTX (optional, for token scanning)
+
+    Returns a list of dicts with 'slide_num', 'session_title', 'session_title_resolved',
+    'session_title_in_template', 'speakers'.
+    Each speaker has per-token resolution status and template presence flags.
+    """
+    import re
+    from pptx import Presentation
+    import tempfile
+    import os
+
+    TOKEN_PATTERNS = {
+        'session_title': r'\{session_title\}',
+        'speaker_name': r'\{speaker_name\}',
+        'job_title': r'\{job_title\}',
+        'company': r'\{company\}',
+    }
+
+    # First, scan template to find which tokens exist (if template_bytes provided)
+    tokens_in_template = {
+        'session_title': template_bytes is None,  # If no template provided, assume all exist
+        'speaker_name': template_bytes is None,
+        'job_title': template_bytes is None,
+        'company': template_bytes is None,
+    }
+    if template_bytes is not None:
+        tokens_in_template = scan_template_for_tokens(template_bytes)
+        print(f"DEBUG scan result: {tokens_in_template}")
+
+    def check_token_in_text(text, token_pattern):
+        """Check if token pattern still exists in text (unresolved)."""
+        return bool(re.search(token_pattern, text))
+
+    def is_substantial_text(text):
+        """Check if text is substantial (not placeholder like '.')."""
+        return len(text) > 2 and any(c.isalnum() for c in text)
+
+    slides = []
+
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp:
+        data = pptx_bytes.getvalue() if hasattr(pptx_bytes, 'getvalue') else pptx_bytes
+        tmp.write(data)
+        tmp_path = tmp.name
+
+    try:
+        prs = Presentation(tmp_path)
+        for slide_idx, slide in enumerate(prs.slides, 1):
+            session_title_value = None
+            session_title_resolved = False
+            session_title_in_template = tokens_in_template.get('session_title', False)
+            speakers = []
+            current_speaker = None
+
+            for shape in slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+
+                tf = shape.text_frame
+
+                for p in tf.paragraphs:
+                    para_text = get_paragraph_text(p).strip()
+
+                    if not is_substantial_text(para_text):
+                        continue
+
+                    # Check for unresolved tokens (placeholder still present)
+                    has_session_title = check_token_in_text(para_text, TOKEN_PATTERNS['session_title'])
+                    has_speaker_name = check_token_in_text(para_text, TOKEN_PATTERNS['speaker_name'])
+                    has_job_title = check_token_in_text(para_text, TOKEN_PATTERNS['job_title'])
+                    has_company = check_token_in_text(para_text, TOKEN_PATTERNS['company'])
+
+                    # Classify paragraph based on what tokens are present
+                    if has_speaker_name:
+                        # This is a speaker line
+                        parts = para_text.replace('|', ',').split(',')
+                        name_part = parts[0].strip() if len(parts) > 0 else ""
+                        job_part = parts[1].strip() if len(parts) > 1 else ""
+                        company_part = parts[2].strip() if len(parts) > 2 else ""
+
+                        speakers.append({
+                            "name": name_part,
+                            "name_resolved": not has_speaker_name,
+                            "name_in_template": tokens_in_template.get('speaker_name', False),
+                            "job_title": job_part,
+                            "job_title_resolved": not has_job_title,
+                            "job_title_in_template": tokens_in_template.get('job_title', False),
+                            "company": company_part,
+                            "company_resolved": not has_company,
+                            "company_in_template": tokens_in_template.get('company', False),
+                        })
+                    elif has_session_title and session_title_value is None:
+                        # This is the session title
+                        session_title_value = para_text
+                        session_title_resolved = not has_session_title
+
+            slides.append({
+                "slide_num": slide_idx,
+                "session_title": session_title_value or "(no title found)",
+                "session_title_resolved": session_title_resolved,
+                "session_title_in_template": session_title_in_template,
+                "speakers": speakers
+            })
+    finally:
+        os.unlink(tmp_path)
+
+    return slides
+
+
+
+def generate_slides_from_template(template_bytes, sessions):
+    """Generate slides using a PPTX template with token replacement.
+
+    Tokens: {session_title}, {speaker_name}, {job_title}, {company}
+
+    Classifies paragraphs by token content, not by shape identity:
+    - Paragraphs with {session_title} get single substitution
+    - Paragraphs with {speaker_name} are the repeatable template paragraph
+    - Paragraphs with no tokens are left untouched
+    """
+    from copy import deepcopy
+    output = io.BytesIO()
+
+    with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp_template:
+        tmp_template.write(template_bytes)
+        tmp_template_path = tmp_template.name
+
+    try:
+        # Load template presentation
+        template_prs = Presentation(tmp_template_path)
+        template_slide = template_prs.slides[0]
+
+        for session in sessions:
+            speakers = session["speakers"]
+            speaker_count = len(speakers)
+
+            # Process each shape in the template slide
+            for shape in template_slide.shapes:
+                if not shape.has_text_frame:
+                    continue
+
+                tf = shape.text_frame
+
+                # Collect paragraphs by type based on tokens actually present
+                speaker_template_paras = []  # Has {speaker_name}
+                title_paras = []             # Has {session_title} but not {speaker_name}
+                other_paras = []             # No tokens
+
+                for p in tf.paragraphs:
+                    full_text = get_paragraph_text(p)
+                    has_speaker = "{speaker_name}" in full_text
+                    has_title = "{session_title}" in full_text
+
+                    if has_speaker:
+                        speaker_template_paras.append(p)
+                    elif has_title:
+                        title_paras.append(p)
+                    else:
+                        other_paras.append(p)
+
+                # Process speaker paragraphs (clone per speaker if needed)
+                if speaker_template_paras and speaker_count > 0:
+                    template_para = speaker_template_paras[0]
+
+                    # Calculate scale based on total speakers
+                    total_lines = speaker_count
+                    available_height = shape.height
+                    estimated_line_height = 360000  # ~0.3 inches in EMUs
+                    available_lines = max(3, available_height / estimated_line_height)
+                    scale = max(0.6, available_lines / total_lines) if total_lines > available_lines else 1.0
+                    print(f"DEBUG: scale={scale:.2f} for {speaker_count} speakers in shape")
+
+                    # First speaker: substitute in-place
+                    substitute_tokens_in_paragraph(template_para, session, speakers[0], scale, context=f"SPEAKER-1/{speaker_count}")
+
+                    # Additional speakers: clone the template paragraph
+                    for idx, speaker in enumerate(speakers[1:], start=2):
+                        new_p_el = deepcopy(template_para._element)
+                        tf._element.append(new_p_el)
+                        new_p = tf.paragraphs[-1]
+                        substitute_tokens_in_paragraph(new_p, session, speaker, scale, context=f"SPEAKER-{idx}/{speaker_count}")
+
+                # Process title paragraphs (single substitution, no cloning)
+                for p in title_paras:
+                    substitute_tokens_in_paragraph(p, session, None, 1.0, context="TITLE")
+
+                # Other paragraphs: leave untouched
+
+        # Save modified presentation
+        template_prs.save(output)
+        output.seek(0)
+
+    finally:
+        os.unlink(tmp_template_path)
+
+    return output, len(sessions)
+
 
 
 def generate_slides(csv_path, event_name, stream, template_image_bytes, text_color):
@@ -415,15 +655,16 @@ def main():
         <h1 style='font-size: 2.5rem; margin-bottom: 0.25rem; margin-top: 0.5rem; color: #{COLORS["cta_bg"]};'>
             Holding Slide Generator
         </h1>
-        <p style='color: #6B7280; font-size: 1rem; margin-bottom: 1.5rem;'>
+        <p style='color: #6B7280; font-size: 1rem; margin-bottom: 0.5rem;'>
             Generate professional holding slides for your event sessions
+        </p>
+        <p style='color: #9CA3AF; font-size: 0.85rem; margin-bottom: 1.5rem;'>
+            Upload a PPTX template with placeholder tokens: {{session_title}}, {{speaker_name}}, {{job_title}}, {{company}}.<br>
+            Font styles, weights, spacing, and colors from your template will carry over to generated slides.
         </p>
         """,
         unsafe_allow_html=True
     )
-
-    # Unequal columns - controls thinner, preview larger
-    left_col, right_col = st.columns([1, 2])
 
     # Initialize session state
     if "csv_path" not in st.session_state:
@@ -435,16 +676,15 @@ def main():
     if "selected_stream" not in st.session_state:
         st.session_state.selected_stream = None
 
-    # Left column - Compact Controls (simplified to 4 controls)
-    with left_col:
-        csv_path = "sample_sessions.csv"
-        selected_event = None
-        selected_stream = None
-        template_bytes = None
-        text_color = "#" + COLORS["title_text_dark"]
+# Controls section
+    csv_path = "sample_sessions.csv"
+    selected_event = None
+    selected_stream = None
+    template_bytes = None
+    text_color = "#" + COLORS["title_text_dark"]
 
-        # Combine Event and Stream into one container with two columns
-        with st.container(border=True):
+    # Combine Event and Stream into one container with two columns
+    with st.container(border=True):
             event_stream_cols = st.columns(2)
 
             with event_stream_cols[0]:
@@ -485,34 +725,20 @@ def main():
                 else:
                     st.selectbox("", ["Select event first"], disabled=True, label_visibility="collapsed")
 
-        # Combine Template and Text Color into one container with two columns
-        if selected_event and selected_stream:
+    # Template upload - PPTX with token replacement
+    if selected_event and selected_stream:
             with st.container(border=True):
-                template_color_cols = st.columns([3, 2])
+                st.markdown("**Template**")
+                template_file = st.file_uploader(
+                    "",
+                    type=["pptx"],
+                    help="Upload a PPTX template with {session_title}, {speaker_name}, {job_title}, {company} tokens",
+                    label_visibility="collapsed"
+                )
+                template_bytes = template_file.getvalue() if template_file else None
 
-                with template_color_cols[0]:
-                    st.markdown("**Template**")
-                    template_file = st.file_uploader(
-                        "",
-                        type=["png", "jpg", "jpeg"],
-                        help="Upload a template with all fixed design elements baked in",
-                        label_visibility="collapsed"
-                    )
-                    template_bytes = template_file.getvalue() if template_file else None
-                    if template_bytes:
-                        st.image(template_bytes, use_container_width=True)
-
-                with template_color_cols[1]:
-                    st.markdown("**Text Color**")
-                    text_color = st.color_picker(
-                        "",
-                        value="#" + COLORS["title_text_dark"],
-                        help="Applies to session title and speaker list",
-                        label_visibility="collapsed"
-                    )
-
-        # Generate button with Indigo CTA color and Ultramarine hover
-        if selected_event and selected_stream:
+    # Generate button with Indigo CTA color and Ultramarine hover
+    if selected_event and selected_stream:
             st.markdown("""
             <style>
                 .stButton>button {
@@ -542,10 +768,9 @@ def main():
             if generate_clicked:
                 with st.spinner("Generating slides..."):
                     try:
-                        output_bytes, num_slides = generate_slides(
-                            csv_path, selected_event, selected_stream,
-                            template_image_bytes=template_bytes,
-                            text_color=text_color.lstrip("#"),
+                        sessions = load_sessions_for_event(csv_path, selected_event, selected_stream)
+                        output_bytes, num_slides = generate_slides_from_template(
+                            template_bytes, sessions
                         )
 
                         # Auto-trigger download via hidden link
@@ -555,67 +780,10 @@ def main():
                             <a id="auto-dl" href="data:application/vnd.openxmlformats-officedocument.presentationml.presentation;base64,{b64}" download="{filename}"></a>
                             <script>document.getElementById('auto-dl').click();</script>
                         """, height=0)
+
+                        # Generation complete - download triggered above
                     except Exception as e:
                         st.error(f"Error: {e}")
-
-    # Right column - Preview with styled container
-    with right_col:
-        st.markdown("**Preview**")
-
-        # Check if template is uploaded for empty state
-        has_template = template_bytes is not None
-
-        # Default preview session
-        preview_session = {
-            "session_title": "Sample Session: The Future of AI in Healthcare",
-            "speakers": [
-                {"name": "Dr. Sarah Chen", "job_title": "CMO", "company": "HealthTech", "is_moderator": True, "headshot_url": None},
-                {"name": "James Rodriguez", "job_title": "VP Innovation", "company": "MedGlobal", "is_moderator": False, "headshot_url": None},
-            ]
-        }
-
-        # Load actual session data if available
-        if selected_event and selected_stream:
-            try:
-                sessions = load_sessions_for_event(csv_path, selected_event, selected_stream)
-                if sessions:
-                    preview_session = sessions[0]
-            except:
-                pass
-
-        # Render preview or show empty state
-        if has_template:
-            preview_img = render_slide_preview_pil(
-                900,
-                preview_session,
-                template_bytes,
-                text_color.lstrip("#") if 'text_color' in locals() else COLORS["title_text_dark"],
-            )
-            st.image(preview_img, use_container_width=True)
-        else:
-            # Empty state with subtle styling
-            st.markdown(
-                """
-                <div style='
-                    background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
-                    border: 2px dashed #cbd5e1;
-                    border-radius: 12px;
-                    padding: 4rem 2rem;
-                    text-align: center;
-                    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-                '>
-                    <div style='font-size: 3rem; margin-bottom: 1rem;'>🖼️</div>
-                    <div style='color: #64748b; font-size: 1.1rem; font-weight: 500;'>
-                        Upload a template to see your preview
-                    </div>
-                    <div style='color: #94a3b8; font-size: 0.9rem; margin-top: 0.5rem;'>
-                        Your slide design will appear here
-                    </div>
-                </div>
-                """,
-                unsafe_allow_html=True
-            )
-
 
 if __name__ == "__main__":
     main()
