@@ -810,18 +810,14 @@ def main():
     if informa_logo_path.exists():
         st.image(str(informa_logo_path), width=120)
 
-    # Title with brand color and subtitle
+    # Title with brand color and subtitle (Fibonacci spacing: 13px, 21px)
     st.markdown(
         f"""
-        <h1 style='font-size: 2.5rem; margin-bottom: 0.25rem; margin-top: 0.5rem; color: #{COLORS["cta_bg"]};'>
-            Holding Slide Generator
+        <h1 style='font-size: 2.5rem; margin-bottom: 13px; margin-top: 8px; color: #{COLORS["cta_bg"]};'>
+            Holding slide generator
         </h1>
-        <p style='color: #6B7280; font-size: 1rem; margin-bottom: 0.5rem;'>
+        <p style='color: #6B7280; font-size: 1rem; margin-bottom: 21px;'>
             Generate professional holding slides for your event sessions
-        </p>
-        <p style='color: #9CA3AF; font-size: 0.85rem; margin-bottom: 1.5rem;'>
-            Upload a PPTX template with placeholder tokens: {{session_title}}, {{speaker_name}}, {{job_title}}, {{company}}.<br>
-            Font styles, weights, spacing, and colors from your template will carry over to generated slides.
         </p>
         """,
         unsafe_allow_html=True
@@ -837,69 +833,92 @@ def main():
     if "selected_stream" not in st.session_state:
         st.session_state.selected_stream = None
 
-# Controls section
+# Controls section — split into two columns: controls (left) and example (right)
     csv_path = "sample_sessions.csv"
     selected_event = None
     selected_stream = None
     template_bytes = None
     text_color = "#" + COLORS["title_text_dark"]
 
-    # Combine Event and Stream into one container with two columns
-    with st.container(border=True):
-            event_stream_cols = st.columns(2)
+    # Create two columns — narrower left for controls, wider right for example
+    main_cols = st.columns([26, 74])
 
-            with event_stream_cols[0]:
-                st.markdown("**Event**")
+    # LEFT COLUMN: Controls
+    with main_cols[0]:
+        # Collapsed expander for template format instructions (Streamlit constrains width to column)
+        example_image_path = Path(__file__).parent / "Example Markup.png"
+        with st.expander("How to format your template", expanded=False):
+            st.markdown("""
+            - Tokens: `{session_title}`, `{speaker_name}`, `{job_title}`, `{company}`}
+            - Font, weight, color carry over from how you style the tokens
+            - One speaker line handles panels too — repeats automatically per speaker
+            """)
+            # Example template image inside expander (fits expander width)
+            if example_image_path.exists():
+                st.image(str(example_image_path), use_container_width=True, output_format="PNG")
+            else:
+                st.caption("Example image not found")
+
+        # Configuration card — Event, Stream, Template grouped together (Proximity principle)
+        with st.container(border=True):
+            # Event selection (13px gap after)
+            st.markdown("**Event**")
+            try:
+                events = load_events(csv_path)
+                if events:
+                    event_names = [e["event_name"] for e in events]
+                    selected_event = st.selectbox(
+                        "",
+                        event_names,
+                        key="event_select",
+                        label_visibility="collapsed"
+                    )
+                    st.session_state.selected_event = selected_event
+                else:
+                    st.warning("No events found")
+                    selected_event = None
+            except Exception as e:
+                st.error(f"Could not load events: {e}")
+                selected_event = None
+
+            # Stream selection (21px gap — section break within card)
+            st.markdown("<div style='margin-top: 21px;'></div>", unsafe_allow_html=True)
+            st.markdown("**Stream**")
+            if selected_event:
                 try:
-                    events = load_events(csv_path)
-                    if events:
-                        event_names = [e["event_name"] for e in events]
-                        selected_event = st.selectbox(
+                    streams = load_streams_for_event(csv_path, selected_event)
+                    if streams:
+                        selected_stream = st.selectbox(
                             "",
-                            event_names,
-                            key="event_select",
+                            streams,
+                            key="stream_select",
                             label_visibility="collapsed"
                         )
-                        st.session_state.selected_event = selected_event
+                        st.session_state.selected_stream = selected_stream
                     else:
-                        st.warning("No events found")
+                        st.warning("No streams found")
+                        selected_stream = None
                 except Exception as e:
-                    st.error(f"Could not load events: {e}")
+                    st.error(f"Could not load streams: {e}")
+                    selected_stream = None
+            else:
+                st.selectbox("", ["Select event first"], disabled=True, label_visibility="collapsed")
+                selected_stream = None
 
-            with event_stream_cols[1]:
-                st.markdown("**Stream**")
-                if selected_event:
-                    try:
-                        streams = load_streams_for_event(csv_path, selected_event)
-                        if streams:
-                            selected_stream = st.selectbox(
-                                "",
-                                streams,
-                                key="stream_select",
-                                label_visibility="collapsed"
-                            )
-                            st.session_state.selected_stream = selected_stream
-                        else:
-                            st.warning("No streams found")
-                    except Exception as e:
-                        st.error(f"Could not load streams: {e}")
-                else:
-                    st.selectbox("", ["Select event first"], disabled=True, label_visibility="collapsed")
+            # Template upload (21px gap)
+            st.markdown("<div style='margin-top: 21px;'></div>", unsafe_allow_html=True)
+            st.markdown("**Template**")
+            template_file = st.file_uploader(
+                "Upload PPTX",
+                type=["pptx"],
+                help="Upload a PPTX template with {session_title}, {speaker_name}, {job_title}, {company} tokens",
+                label_visibility="collapsed"
+            )
+            template_bytes = template_file.getvalue() if template_file else None
 
-    # Template upload - PPTX with token replacement
-    if selected_event and selected_stream:
-            with st.container(border=True):
-                st.markdown("**Template**")
-                template_file = st.file_uploader(
-                    "",
-                    type=["pptx"],
-                    help="Upload a PPTX template with {session_title}, {speaker_name}, {job_title}, {company} tokens",
-                    label_visibility="collapsed"
-                )
-                template_bytes = template_file.getvalue() if template_file else None
-
-    # Generate button with Indigo CTA color and Ultramarine hover
-    if selected_event and selected_stream:
+        # Generate button — separate from config card (34px gap, visual distinction)
+        st.markdown("<div style='margin-top: 34px;'></div>", unsafe_allow_html=True)
+        if selected_event and selected_stream:
             st.markdown("""
             <style>
                 .stButton>button {
@@ -921,7 +940,7 @@ def main():
             </style>
             """, unsafe_allow_html=True)
             generate_clicked = st.button(
-                "Generate Slides",
+                "Generate slides",
                 type="primary",
                 use_container_width=True,
             )
@@ -945,6 +964,10 @@ def main():
                         # Generation complete - download triggered above
                     except Exception as e:
                         st.error(f"Error: {e}")
+
+    # RIGHT COLUMN: Empty (all content moved to left column expander)
+    with main_cols[1]:
+        pass
 
 if __name__ == "__main__":
     main()
