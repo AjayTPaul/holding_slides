@@ -22,6 +22,7 @@ from pptx import Presentation
 from pptx.util import Inches, Pt, Emu
 from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN
+from pptx.oxml.ns import qn
 
 
 # -----------------------------------------------------------------------------
@@ -160,56 +161,65 @@ def fit_content(session, panel_height_in=CONTENT_PANEL["height"]):
 
 
 def substitute_tokens_in_paragraph(p, session, speaker=None, scale=1.0, context=""):
-    """Substitute tokens in a paragraph, handling PowerPoint's run splitting.
+    """Substitute tokens in a paragraph, preserving each run's original formatting.
 
     PowerPoint may split tokens across runs (e.g., "{session" in run0, "_title}" in run1).
-    This function merges runs, substitutes, then rebuilds runs to preserve formatting.
+    This function substitutes tokens into the specific run(s) they originally occupied,
+    so literal separators and each token's formatting (bold name, regular job title,
+    bold company) stay exactly as designed in the template.
     """
-    from copy import deepcopy
-
-    # Debug: print raw run text with context
-    print(f"DEBUG paragraph runs {context}:")
-    for i, run in enumerate(p.runs):
-        print(f"  run[{i}] = {repr(run.text)}")
-
-    # Get full paragraph text
-    full_text = get_paragraph_text(p)
-    print(f"  full_text = {repr(full_text)}")
-
-    # Check if any tokens present
-    tokens = ["{session_title}", "{speaker_name}", "{job_title}", "{company}"]
-    if not any(t in full_text for t in tokens):
-        print(f"  No tokens found, skipping")
+    runs = list(p.runs)
+    if not runs:
         return
 
-    # Prepare replacement values
-    session_title = session.get("session_title", "")
-    speaker_name = speaker.get("name", "") if speaker else "{NAME}"
-    job_title = speaker.get("job_title", "") if speaker else "{JOB}"
-    company = speaker.get("company", "") if speaker else "{COMPANY}"
+    run_texts = [r.text for r in runs]
+    full_text = "".join(run_texts)
+    char_run_index = []
+    for i, t in enumerate(run_texts):
+        char_run_index.extend([i] * len(t))
 
-    # Perform substitutions on the full text
-    new_text = full_text
-    new_text = new_text.replace("{session_title}", session_title)
-    new_text = new_text.replace("{speaker_name}", speaker_name)
-    new_text = new_text.replace("{job_title}", job_title)
-    new_text = new_text.replace("{company}", company)
+    print(f"DEBUG paragraph runs {context}:")
+    for i, run in enumerate(runs):
+        print(f"  run[{i}] = {repr(run.text)}")
+    print(f"  full_text = {repr(full_text)}")
 
-    print(f"  after substitution = {repr(new_text)}")
+    tokens = ["{session_title}", "{speaker_name}", "{job_title}", "{company}"]
+    if not any(t in full_text for t in tokens):
+        print("  No tokens found, skipping")
+        return
 
-    # Rebuild runs: keep first run's formatting, put all text there, clear others
-    if p.runs:
-        first_run = p.runs[0]
-        first_run.text = new_text
+    replacements = {
+        "{session_title}": session.get("session_title", ""),
+        "{speaker_name}": speaker.get("name", "") if speaker else "{NAME}",
+        "{job_title}": speaker.get("job_title", "") if speaker else "{JOB}",
+        "{company}": speaker.get("company", "") if speaker else "{COMPANY}",
+    }
 
-        # Clear remaining runs
-        for run in p.runs[1:]:
-            run.text = ""
+    import re
+    pattern = "|".join(re.escape(t) for t in tokens)
+    matches = list(re.finditer(pattern, full_text))
+    if not matches:
+        print("  No tokens found, skipping")
+        return
 
-        # Apply font scaling
-        if scale < 1.0 and first_run.font.size:
-            from pptx.util import Pt
-            first_run.font.size = Pt(int(first_run.font.size.pt * scale))
+    new_run_text = {i: "" for i in range(len(runs))}
+    cursor = 0
+    for m in matches:
+        start, end = m.start(), m.end()
+        for pos in range(cursor, start):
+            new_run_text[char_run_index[pos]] += full_text[pos]
+        owner_idx = char_run_index[start]  # token inherits the formatting of its starting run
+        new_run_text[owner_idx] += replacements[m.group(0)]
+        cursor = end
+    for pos in range(cursor, len(full_text)):
+        new_run_text[char_run_index[pos]] += full_text[pos]
+
+    print(f"  after substitution (per-run) = {[new_run_text[i] for i in range(len(runs))]}")
+
+    for i, run in enumerate(runs):
+        run.text = new_run_text[i]
+        if scale < 1.0 and run.font.size and new_run_text[i]:
+            run.font.size = Pt(int(run.font.size.pt * scale))
 
 
 def substitute_tokens_in_shape(shape, session):
@@ -235,6 +245,117 @@ def get_paragraph_text(p):
     Same logic used by both generation and preview scanning.
     """
     return "".join(run.text for run in p.runs)
+
+
+def strip_placeholder_identity(shape_element):
+    """Remove placeholder identity from copied shapes so they render independently.
+
+    Placeholder shapes retain references to the slide layout; stripping these
+    ensures copied shapes display correctly on new slides.
+    Safe no-op on shapes that aren't placeholders.
+    """
+    for ph in shape_element.findall('.//' + qn('p:ph')):
+        ph.getparent().remove(ph)
+
+
+def bake_in_inherited_geometry(shape, layout):
+    """Copy placeholder's inherited position/fill/border from layout definition
+    directly into shape's own XML so it renders correctly even on a layout with
+    no matching placeholder to inherit from.
+    """
+    from copy import deepcopy
+    from lxml import etree
+
+    if not shape.is_placeholder:
+        return
+
+    idx = shape.placeholder_format.idx
+    layout_ph = next(
+        (lph for lph in layout.placeholders if lph.placeholder_format.idx == idx),
+        None
+    )
+    if layout_ph is None:
+        return
+
+    sp_el = shape._element
+    spPr = sp_el.find(qn('p:spPr'))
+    if spPr is None:
+        spPr = etree.SubElement(sp_el, qn('p:spPr'))
+
+    layout_spPr = layout_ph._element.find(qn('p:spPr'))
+    if layout_spPr is None:
+        return
+
+    # Copy transform if shape doesn't have one
+    if spPr.find(qn('a:xfrm')) is None:
+        layout_xfrm = layout_spPr.find(qn('a:xfrm'))
+        if layout_xfrm is not None:
+            spPr.insert(0, deepcopy(layout_xfrm))
+
+    # Copy fill if shape doesn't have one
+    fill_tags = ('a:solidFill', 'a:gradFill', 'a:blipFill', 'a:noFill')
+    has_fill = any(spPr.find(qn(t)) is not None for t in fill_tags)
+    if not has_fill:
+        for fill_tag in fill_tags:
+            layout_fill = layout_spPr.find(qn(fill_tag))
+            if layout_fill is not None:
+                spPr.append(deepcopy(layout_fill))
+                break
+
+    # Copy line/border if shape doesn't have one
+    if spPr.find(qn('a:ln')) is None:
+        layout_ln = layout_spPr.find(qn('a:ln'))
+        if layout_ln is not None:
+            spPr.append(deepcopy(layout_ln))
+
+    # Copy geometry/prstGeom if shape doesn't have one
+    if spPr.find(qn('a:prstGeom')) is None:
+        layout_geom = layout_spPr.find(qn('a:prstGeom'))
+        if layout_geom is not None:
+            spPr.append(deepcopy(layout_geom))
+
+    # Ensure correct OOXML child element order (xfrm, prstGeom, fill, ln)
+    # PowerPoint enforces strict ordering; LibreOffice does not
+    reorder_spPr_children(spPr)
+
+
+def reorder_spPr_children(spPr):
+    """Reorder spPr children to comply with OOXML schema sequence.
+
+    Required order: xfrm, prstGeom, fill (any type), ln
+    PowerPoint enforces this strictly; LibreOffice is lenient.
+    """
+    # OOXML strict order: xfrm, geometry, fill, line
+    CORRECT_ORDER = [
+        'a:xfrm',
+        'a:custGeom',
+        'a:prstGeom',
+        'a:noFill',
+        'a:solidFill',
+        'a:gradFill',
+        'a:blipFill',
+        'a:pattFill',
+        'a:grpFill',
+        'a:ln',
+    ]
+
+    # Collect all current children by their tag
+    children = {}
+    for child in list(spPr):
+        children[child.tag] = child
+        spPr.remove(child)
+
+    # Re-append in correct order
+    for tag_name in CORRECT_ORDER:
+        full_tag = qn(tag_name)
+        if full_tag in children:
+            spPr.append(children[full_tag])
+
+    # Append any remaining unrecognized elements at the end
+    appended_tags = {qn(t) for t in CORRECT_ORDER}
+    for child_tag, child in list(children.items()):
+        if child_tag not in appended_tags:
+            spPr.append(child)
 
 
 def scan_template_for_tokens(template_bytes):
@@ -403,16 +524,16 @@ def extract_slide_confirmation(pptx_bytes, template_bytes=None):
 
 
 def generate_slides_from_template(template_bytes, sessions):
-    """Generate slides using a PPTX template with token replacement.
+    """Generate one slide per session using a PPTX template with token replacement.
+
+    Two-phase process, strictly ordered:
+      Phase 1: capture pristine copies of the template's shapes, then create N
+               slides (N = len(sessions)) with NO substitution applied to any of them.
+      Phase 2: substitute each slide's own session data independently, only after
+               all N slides already exist as separate objects.
 
     Tokens: {session_title}, {speaker_name}, {job_title}, {company}
-
-    Classifies paragraphs by token content, not by shape identity:
-    - Paragraphs with {session_title} get single substitution
-    - Paragraphs with {speaker_name} are the repeatable template paragraph
-    - Paragraphs with no tokens are left untouched
     """
-    from copy import deepcopy
     output = io.BytesIO()
 
     with tempfile.NamedTemporaryFile(suffix=".pptx", delete=False) as tmp_template:
@@ -420,67 +541,107 @@ def generate_slides_from_template(template_bytes, sessions):
         tmp_template_path = tmp_template.name
 
     try:
-        # Load template presentation
         template_prs = Presentation(tmp_template_path)
-        template_slide = template_prs.slides[0]
+        original_slide = template_prs.slides[0]
+        original_layout = original_slide.slide_layout
 
-        for session in sessions:
+        # --- Bake inherited geometry BEFORE capturing shapes ---
+        # Panel shape inherits position/fill from layout; bake it in so it works
+        # on Blank layouts that don't have the same placeholder definitions.
+        for shape in original_slide.shapes:
+            bake_in_inherited_geometry(shape, original_layout)
+        print(f"DEBUG: Baked inherited geometry from layout {original_layout.name!r}")
+
+        # --- Capture pristine shape elements BEFORE anything is touched ---
+        pristine_shape_elements = [deepcopy(shape._element) for shape in original_slide.shapes]
+        print(f"DEBUG: Captured {len(pristine_shape_elements)} pristine shape(s) from original slide")
+
+        # --- Find a blank layout (no title/body placeholders) for new slides ---
+        blank_layout = None
+        for layout in template_prs.slide_masters[0].slide_layouts:
+            if layout.name.strip().lower() == "blank":
+                blank_layout = layout
+                break
+        if blank_layout is None:
+            blank_layout = min(
+                template_prs.slide_masters[0].slide_layouts,
+                key=lambda l: len(l.placeholders)
+            )
+        print(f"DEBUG: Using layout {blank_layout.name!r} for new slides")
+
+        # ============ PHASE 1: create all N slides, zero substitution ============
+        n = len(sessions)
+        all_slides = [original_slide]  # slide 1 already exists and is still pristine
+
+        for i in range(1, n):
+            new_slide = template_prs.slides.add_slide(blank_layout)
+            for shp in list(new_slide.shapes):
+                shp._element.getparent().remove(shp._element)
+            for el in pristine_shape_elements:
+                el_copy = deepcopy(el)
+                strip_placeholder_identity(el_copy)
+                new_slide.shapes._spTree.append(el_copy)
+            for rel_id, rel in original_slide.part.rels.items():
+                if "notesSlide" not in rel.reltype and "slideLayout" not in rel.reltype:
+                    if "image" in rel.reltype:
+                        new_slide.part.rels.add_relationship(rel.reltype, rel.target_part, rel_id)
+            all_slides.append(new_slide)
+            print(f"DEBUG: Created slide {i + 1} of {n} (pristine, no substitution yet)")
+
+        print(f"DEBUG: Phase 1 complete — created {len(all_slides)} slides, zero substitution done")
+
+        # ============ PHASE 2: substitute each slide's own session data ============
+        for i, (slide, session) in enumerate(zip(all_slides, sessions), start=1):
+            print(f"DEBUG: Phase 2 — substituting session {i} of {n}: {session['session_title']}")
             speakers = session["speakers"]
             speaker_count = len(speakers)
 
-            # Process each shape in the template slide
-            for shape in template_slide.shapes:
+            for shape in slide.shapes:
                 if not shape.has_text_frame:
                     continue
-
                 tf = shape.text_frame
 
-                # Collect paragraphs by type based on tokens actually present
-                speaker_template_paras = []  # Has {speaker_name}
-                title_paras = []             # Has {session_title} but not {speaker_name}
-                other_paras = []             # No tokens
-
+                speaker_template_paras = []
+                title_paras = []
                 for p in tf.paragraphs:
                     full_text = get_paragraph_text(p)
-                    has_speaker = "{speaker_name}" in full_text
-                    has_title = "{session_title}" in full_text
-
-                    if has_speaker:
+                    if "{speaker_name}" in full_text:
                         speaker_template_paras.append(p)
-                    elif has_title:
+                    elif "{session_title}" in full_text:
                         title_paras.append(p)
-                    else:
-                        other_paras.append(p)
 
-                # Process speaker paragraphs (clone per speaker if needed)
                 if speaker_template_paras and speaker_count > 0:
                     template_para = speaker_template_paras[0]
 
-                    # Calculate scale based on total speakers
+                    # Pristine copy captured BEFORE any substitution touches it —
+                    # this is what fixes the "same speaker repeated" bug.
+                    pristine_speaker_el = deepcopy(template_para._element)
+
                     total_lines = speaker_count
                     available_height = shape.height
-                    estimated_line_height = 360000  # ~0.3 inches in EMUs
+                    estimated_line_height = 360000
                     available_lines = max(3, available_height / estimated_line_height)
                     scale = max(0.6, available_lines / total_lines) if total_lines > available_lines else 1.0
-                    print(f"DEBUG: scale={scale:.2f} for {speaker_count} speakers in shape")
 
-                    # First speaker: substitute in-place
-                    substitute_tokens_in_paragraph(template_para, session, speakers[0], scale, context=f"SPEAKER-1/{speaker_count}")
+                    substitute_tokens_in_paragraph(
+                        template_para, session, speakers[0], scale,
+                        context=f"S{i}-SPEAKER-1/{speaker_count}"
+                    )
 
-                    # Additional speakers: clone the template paragraph
                     for idx, speaker in enumerate(speakers[1:], start=2):
-                        new_p_el = deepcopy(template_para._element)
+                        new_p_el = deepcopy(pristine_speaker_el)
                         tf._element.append(new_p_el)
                         new_p = tf.paragraphs[-1]
-                        substitute_tokens_in_paragraph(new_p, session, speaker, scale, context=f"SPEAKER-{idx}/{speaker_count}")
+                        substitute_tokens_in_paragraph(
+                            new_p, session, speaker, scale,
+                            context=f"S{i}-SPEAKER-{idx}/{speaker_count}"
+                        )
 
-                # Process title paragraphs (single substitution, no cloning)
                 for p in title_paras:
-                    substitute_tokens_in_paragraph(p, session, None, 1.0, context="TITLE")
+                    substitute_tokens_in_paragraph(
+                        p, session, None, 1.0, context=f"S{i}-TITLE"
+                    )
 
-                # Other paragraphs: leave untouched
-
-        # Save modified presentation
         template_prs.save(output)
         output.seek(0)
 
